@@ -358,7 +358,7 @@ class MainActivity : Activity() {
             "calendar" to "Calendar", "ramble" to "Ramble", "assist" to "Task & Email Assist",
             "history" to "History", "insights" to "Project Insights", "backups" to "Backups & Sync",
             "stats" to "Productivity", "search" to "Search", "focus" to "Focus Timer",
-            "smartplan" to "Smart Plan"
+            "smartplan" to "Smart Plan", "performance" to "Performance"
         )[s] ?: "GhostBlade Task"
     }
 
@@ -585,6 +585,7 @@ class MainActivity : Activity() {
             arrayOf("calendar", "🗓️", "Calendar view", "Month grid of your tasks"),
             arrayOf("focus", "🎯", "Focus timer", "Pomodoro countdown for any task"),
             arrayOf("stats", "📈", "Productivity", "Streak, weekly chart, totals"),
+            arrayOf("performance", "📊", "Performance", "7d · 30d · 2m · 1y — done vs missed, streak rate"),
             arrayOf("insights", "💡", "Project insights", "Progress & trends per project"),
             arrayOf("history", "🕘", "Full history", "Every creation & completion"),
             arrayOf("ramble", "🎙️", "Ramble", "Speak or type many tasks at once"),
@@ -792,6 +793,7 @@ class MainActivity : Activity() {
             s == "calendar" -> renderCalendar()
             s == "focus" -> renderFocus()
             s == "stats" -> renderStats()
+            s == "performance" -> renderPerformance()
             s == "insights" -> renderInsights()
             s == "history" -> renderHistory()
             s == "ramble" -> renderRamble()
@@ -1850,6 +1852,164 @@ class MainActivity : Activity() {
             per.addView(rowL)
         }
         content.addView(per)
+    }
+
+    /* ----- Performance (database-backed) ----- */
+
+    private var perfRange = 7
+
+    private fun renderPerformance() {
+        val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
+        chipsRow.layoutParams = lp(b = dp(10f))
+        listOf(7 to "7 days", 30 to "30 days", 60 to "2 months", 365 to "1 year").forEach { (days, lbl) ->
+            val ch = chipBtn(lbl, perfRange == days) { perfRange = days; render() }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            chipsRow.addView(ch)
+        }
+        content.addView(chipsRow)
+
+        val today = Dates.today()
+        val from = Dates.addDays(today, -(perfRange - 1))
+        val done = Db.completionsInRange(from, today)
+        val missed = Db.outcomesInRange(from, today, "missed")
+        val decided = done.size + missed.size
+        val rate = if (decided > 0) done.size * 100 / decided else null
+        val active = Db.activeDays(from, today)
+        val streakRate = active * 100 / perfRange
+
+        val g1 = LinearLayout(this); g1.orientation = LinearLayout.HORIZONTAL
+        val c1 = statCard(if (rate != null) "$rate%" else "—", "completion rate")
+        c1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        val c2 = statCard(done.size.toString(), "tasks done")
+        c2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        g1.addView(c1); g1.addView(c2)
+        content.addView(g1)
+        val g2 = LinearLayout(this); g2.orientation = LinearLayout.HORIZONTAL
+        val c3 = statCard(missed.size.toString(), "tasks missed")
+        c3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        val c4 = statCard("$streakRate%", "streak rate · $active/$perfRange days active")
+        c4.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        g2.addView(c3); g2.addView(c4)
+        content.addView(g2)
+        val g3 = LinearLayout(this); g3.orientation = LinearLayout.HORIZONTAL
+        val c5 = statCard("🔥 " + Store.currentStreak(), "current streak (days)")
+        c5.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        val c6 = statCard("🏆 " + Db.bestStreak(), "best streak (days)")
+        c6.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        g3.addView(c5); g3.addView(c6)
+        content.addView(g3)
+
+        // chart, bucketed by range
+        val byDay = Db.doneCountByDay(from, today)
+        val buckets = perfBuckets(perfRange, byDay)
+        val chart = card()
+        chart.addView(tv(
+            when (perfRange) {
+                7 -> "Completions per day"
+                30 -> "Completions per day"
+                60 -> "Completions per week"
+                else -> "Completions per month"
+            }, 14.5f, Glass.TEXT, true
+        ))
+        val maxB = Math.max(1, buckets.maxOfOrNull { it.second } ?: 1)
+        val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
+        bars.gravity = Gravity.BOTTOM
+        bars.layoutParams = lp(t = dp(12f))
+        buckets.forEach { (lbl, n) ->
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.gravity = Gravity.CENTER_HORIZONTAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            if (perfRange <= 30) colL.addView(tv(n.toString(), 10f, Glass.MUTED, true))
+            val bar = View(this)
+            val h = dp(6f) + (dp(64f) * n / maxB)
+            bar.layoutParams = LinearLayout.LayoutParams(-1, h).apply {
+                topMargin = dp(3f); bottomMargin = dp(3f); leftMargin = dp(1f); rightMargin = dp(1f)
+            }
+            val g = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(Accents.acc2(this), Accents.acc1(this))
+            )
+            g.cornerRadius = dp(4f).toFloat()
+            bar.background = g
+            colL.addView(bar)
+            colL.addView(tv(lbl, 9.5f, Glass.MUTED))
+            bars.addView(colL)
+        }
+        chart.addView(bars)
+        content.addView(chart)
+
+        // per-project
+        val projRows = Db.doneByProject(from, today)
+        if (projRows.isNotEmpty()) {
+            val pc = card()
+            pc.addView(tv("Done by project", 14.5f, Glass.TEXT, true))
+            projRows.take(6).forEach { (pid, n) ->
+                val name = Store.state.projects.find { it.id == pid }?.name ?: "Inbox / deleted"
+                val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+                rowL.layoutParams = lp(t = dp(6f))
+                val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.TEXT, true))
+                pc.addView(rowL)
+            }
+            content.addView(pc)
+        }
+
+        // done list
+        content.addView(dayGroup("✅ DONE — ${done.size}"))
+        if (done.isEmpty()) content.addView(tv("Nothing completed in this period yet.", 13f, Glass.MUTED))
+        var lastDate = ""
+        done.take(80).forEach { c ->
+            if (c.date != lastDate) {
+                lastDate = c.date
+                content.addView(tv(if (c.date == today) "Today" else Dates.fmtDay(c.date), 12.5f, Accents.acc1(this), true))
+            }
+            val proj = Store.state.projects.find { it.id == c.projectId }
+            content.addView(tv("✅  " + c.title + if (proj != null) "   #" + proj.name else "", 14f))
+        }
+        if (done.size > 80) content.addView(tv("…and ${done.size - 80} more", 12.5f, Glass.MUTED))
+
+        // missed list
+        content.addView(dayGroup("✗ MISSED — ${missed.size}"))
+        if (missed.isEmpty()) content.addView(tv("No missed tasks in this period. Clean record 🎉", 13f, Glass.MUTED))
+        missed.take(80).forEach { m ->
+            val proj = Store.state.projects.find { it.id == m.projectId }
+            val whenLbl = if (m.date == Dates.addDays(today, -1)) "Yesterday" else Dates.fmtDay(m.date)
+            content.addView(tv("✗  " + m.title + "   ·  " + whenLbl + if (proj != null) "   #" + proj.name else "", 14f, Glass.MUTED))
+        }
+        if (missed.size > 80) content.addView(tv("…and ${missed.size - 80} more", 12.5f, Glass.MUTED))
+
+        content.addView(tv("Stored in your on-device database (SQLite). Missed days are recorded automatically — including every day a recurring task came due and wasn't done. History grows from your real usage.", 12f, Glass.MUTED))
+    }
+
+    private fun perfBuckets(range: Int, byDay: Map<String, Int>): List<Pair<String, Int>> {
+        val today = Dates.today()
+        val dayNames = arrayOf("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa")
+        return when {
+            range <= 30 -> (range - 1 downTo 0).map { off ->
+                val d = Dates.addDays(today, -off)
+                val lbl = if (range == 7) dayNames[Dates.jsDayOfWeek(Dates.parse(d))]
+                else Dates.parse(d).get(java.util.Calendar.DAY_OF_MONTH).toString()
+                lbl to (byDay[d] ?: 0)
+            }
+            range == 60 -> (8 downTo 0).map { w ->
+                val end = Dates.addDays(today, -(w * 7))
+                var sum = 0
+                for (i in 0 until 7) sum += byDay[Dates.addDays(end, -i)] ?: 0
+                Dates.fmtDay(Dates.addDays(end, -6)).substring(4) to sum
+            }
+            else -> (11 downTo 0).map { mOff ->
+                val cal = java.util.Calendar.getInstance()
+                cal.add(java.util.Calendar.MONTH, -mOff)
+                val y = cal.get(java.util.Calendar.YEAR)
+                val mo = cal.get(java.util.Calendar.MONTH)
+                var sum = 0
+                for ((d, n) in byDay) {
+                    val dc = Dates.parse(d)
+                    if (dc.get(java.util.Calendar.YEAR) == y && dc.get(java.util.Calendar.MONTH) == mo) sum += n
+                }
+                arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[mo] to sum
+            }
+        }
     }
 
     /* ----- Insights ----- */

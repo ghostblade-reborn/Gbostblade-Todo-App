@@ -24,6 +24,9 @@ object Store {
         if (!state.seeded) seed()
         autoBackup()
         save()
+        Db.init(appCtx)
+        Db.migrateIfNeeded(state)
+        Db.rollover(state)
     }
 
     fun save() {
@@ -116,6 +119,7 @@ object Store {
             state.activities = fresh.activities
             state.tasks.forEach { Reminders.sync(appCtx, it); Reminders.syncGeo(appCtx, it) }
             save()
+            Db.rebuildFromState(state)
             true
         } catch (e: Exception) { false }
     }
@@ -177,9 +181,9 @@ object Store {
         val i = state.tasks.indexOfFirst { it.id == id }
         if (i < 0) return ""
         val t = state.tasks[i]
-        state.completions.add(
-            0, CompletionItem(uid(), id, t.title, t.projectId, Dates.today(), System.currentTimeMillis())
-        )
+        val comp = CompletionItem(uid(), id, t.title, t.projectId, Dates.today(), System.currentTimeMillis())
+        state.completions.add(0, comp)
+        Db.logCompletion(comp)
         logActivity("complete", "Completed \"" + t.title + "\"")
         return if (t.recurrence != null) {
             t.dueDate = Dates.advanceDate(t)
