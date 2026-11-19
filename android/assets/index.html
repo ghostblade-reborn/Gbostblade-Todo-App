@@ -217,6 +217,24 @@ nav.bottom button.on .ic{display:inline-block;animation:pop .38s var(--spring-bo
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.001s!important;transition-duration:.001s!important}
 }
+
+/* ================= WALLPAPERS (Edit background) ================= */
+body[data-wallpaper="sunset"] .wallpaper{background:radial-gradient(120% 90% at 85% -10%, rgba(255,140,60,.55), transparent 55%),radial-gradient(100% 80% at -10% 30%, rgba(255,60,110,.50), transparent 55%),radial-gradient(100% 90% at 50% 115%, rgba(120,40,180,.50), transparent 60%),linear-gradient(180deg,#160a18,#06060a)}
+body[data-wallpaper="ocean"] .wallpaper{background:radial-gradient(120% 90% at 80% -10%, rgba(0,200,255,.50), transparent 55%),radial-gradient(100% 85% at -10% 40%, rgba(0,90,255,.50), transparent 55%),radial-gradient(110% 90% at 60% 115%, rgba(0,255,190,.28), transparent 60%),linear-gradient(180deg,#04101e,#06060a)}
+body[data-wallpaper="forest"] .wallpaper{background:radial-gradient(120% 90% at 85% -10%, rgba(120,255,160,.40), transparent 55%),radial-gradient(100% 80% at -10% 30%, rgba(0,160,110,.45), transparent 55%),radial-gradient(110% 90% at 55% 115%, rgba(190,255,90,.22), transparent 60%),linear-gradient(180deg,#07130c,#06060a)}
+body[data-wallpaper="crimson"] .wallpaper{background:radial-gradient(120% 90% at 85% -10%, rgba(255,70,60,.55), transparent 55%),radial-gradient(100% 80% at -10% 30%, rgba(160,0,40,.50), transparent 55%),radial-gradient(110% 90% at 55% 115%, rgba(255,120,40,.25), transparent 60%),linear-gradient(180deg,#170608,#06060a)}
+body[data-wallpaper="mono"] .wallpaper{background:radial-gradient(120% 90% at 85% -10%, rgba(200,200,220,.20), transparent 55%),radial-gradient(100% 80% at -10% 40%, rgba(120,120,150,.18), transparent 55%),linear-gradient(180deg,#0c0c10,#06060a)}
+.wp-row{display:flex;gap:9px;flex-wrap:wrap;margin:2px 0 11px}
+.wp-swatch{width:44px;height:44px;border-radius:50%;border:2px solid var(--stroke-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 4px 12px rgba(0,0,0,.3);padding:0;transition:transform .22s var(--spring-bouncy),border-color .2s}
+.wp-swatch:active{transform:scale(.9)}
+.wp-swatch.on{border-color:#fff;transform:scale(1.1)}
+.wp-aurora{background:linear-gradient(135deg,#5e5ce6,#0a84ff 45%,#ff375f)}
+.wp-sunset{background:linear-gradient(135deg,#ff8c3a,#ff3c6e 50%,#7828b4)}
+.wp-ocean{background:linear-gradient(135deg,#00c8ff,#005aff 55%,#00ffbe)}
+.wp-forest{background:linear-gradient(135deg,#78ffa0,#00a06e 55%,#beff5a)}
+.wp-crimson{background:linear-gradient(135deg,#ff463c,#a00028 55%,#ff7828)}
+.wp-mono{background:linear-gradient(135deg,#c8c8dc,#3c3c4c)}
+.wp-custom{background:linear-gradient(135deg,#4a4a58,#22222c);font-size:19px}
 </style>
 </head>
 <body>
@@ -499,6 +517,16 @@ function renderNav(){
   const items=[['inbox','📥','Inbox'],['today','📅','Today'],['upcoming','🗓️','Upcoming'],['browse','🔍','Browse']];
   $('#bottomnav').innerHTML=items.map(([v,ic,l])=>'<button data-act="nav" data-v="'+v+'" class="'+(!sub&&view===v?'on':'')+'"><span class="ic">'+ic+'</span>'+l+'</button>').join('');
 }
+function applyWallpaper(){
+  const w=localStorage.getItem('gbt_wallpaper')||'aurora';
+  document.body.dataset.wallpaper=w;
+  const el=document.querySelector('.wallpaper'); if(!el)return;
+  if(w==='custom'){
+    const img=localStorage.getItem('gbt_wallpaper_img');
+    el.style.backgroundImage=img?('url("'+img+'")'):'';
+    el.style.backgroundSize='cover'; el.style.backgroundPosition='center';
+  } else { el.style.backgroundImage=''; el.style.backgroundSize=''; el.style.backgroundPosition=''; }
+}
 function renderBrowse(){
   let h='<div class="daygroup">PROJECTS</div>';
   if(!S.projects.length)h+='<div class="empty">No projects yet — add one with #Name in Quick Add.</div>';
@@ -514,8 +542,15 @@ function renderBrowse(){
   const pro=[['calendar','🗓️','Calendar view','Month grid of your tasks'],['stats','📈','Productivity','Streak, weekly chart, totals'],['insights','💡','Project insights','Progress & trends per project'],['history','🕘','Full history','Every creation & completion'],['ramble','🎙️','Ramble','Speak or type many tasks at once'],['assist','🤖','Task & Email Assist','Paste text → tasks · break tasks down'],['backups','💾','Backups','Auto snapshots · export · restore']];
   pro.forEach(([k,ic,n,d])=>{h+='<button class="menuitem" data-act="opensub" data-v="'+k+'"><span class="ic">'+ic+'</span><span>'+n+'<small>'+d+'</small></span><span class="tag">PRO</span></button>';});
   const gv=localStorage.getItem('gbt_glass')||'default';
+  const wp=localStorage.getItem('gbt_wallpaper')||'aurora'; const hasWpImg=!!localStorage.getItem('gbt_wallpaper_img');
   h+='<div class="daygroup">APPEARANCE</div><div class="card"><h4>🪟 Glass style</h4><div class="muted" style="margin-bottom:9px">Liquid Glass, your way — like iOS: Fully Clear, Default, or Fully Tinted.</div><div class="chips" style="margin:0">'
-    +[['clear','Fully Clear'],['default','Default'],['tinted','Fully Tinted']].map(([v,l])=>'<button class="chip'+(gv===v?' on':'')+'" data-act="glass" data-v="'+v+'">'+l+'</button>').join('')+'</div></div>';
+    +[['clear','Fully Clear'],['default','Default'],['tinted','Fully Tinted']].map(([v,l])=>'<button class="chip'+(gv===v?' on':'')+'" data-act="glass" data-v="'+v+'">'+l+'</button>').join('')+'</div>'
+    +'<label class="lbl" style="margin-top:13px">Background wallpaper</label><div class="wp-row">'
+    +[['aurora','Aurora'],['sunset','Sunset'],['ocean','Ocean'],['forest','Forest'],['crimson','Crimson'],['mono','Mono']].map(([v,l])=>'<button class="wp-swatch wp-'+v+(wp===v?' on':'')+'" data-act="wp" data-v="'+v+'" title="'+l+'" aria-label="'+l+'"></button>').join('')
+    +(hasWpImg?'<button class="wp-swatch wp-custom'+(wp==='custom'?' on':'')+'" data-act="wp" data-v="custom" title="Your photo" aria-label="Your photo">🖼️</button>':'')
+    +'</div><div class="row2"><button class="btn ghost small" data-act="wp-upload">🖼️ Upload photo</button>'
+    +(hasWpImg?'<button class="btn ghost small" data-act="wp-remove">Remove photo</button>':'')+'</div>'
+    +'<input type="file" id="wpFile" accept="image/*" style="display:none"></div>';
   h+='<div class="card"><h4>GhostBlade Task</h4><div class="muted">Android edition · data lives on this device · reminders fire even when the app is closed and survive reboot.</div></div>';
   return h;
 }
@@ -725,6 +760,9 @@ document.addEventListener('click',e=>{
   switch(act){
     case 'nav': view=el.dataset.v; sub=null; render(); break;
     case 'glass': localStorage.setItem('gbt_glass',el.dataset.v); document.body.dataset.glass=el.dataset.v; render(); break;
+    case 'wp': localStorage.setItem('gbt_wallpaper',el.dataset.v); applyWallpaper(); render(); break;
+    case 'wp-upload': { const f=$('#wpFile'); if(f)f.click(); break; }
+    case 'wp-remove': localStorage.removeItem('gbt_wallpaper_img'); if(localStorage.getItem('gbt_wallpaper')==='custom')localStorage.setItem('gbt_wallpaper','aurora'); applyWallpaper(); render(); toast('Photo removed'); break;
     case 'opensub': sub=el.dataset.v; render(); break;
     case 'back': sub=null; render(); break;
     case 'openproject': sub='project:'+id; render(); break;
@@ -816,8 +854,32 @@ document.addEventListener('pointerdown',e=>{
   document.querySelectorAll('.pressing').forEach(x=>x.classList.remove('pressing'));
 },{passive:true}));
 document.addEventListener('pointermove',()=>clearTimeout(pressTimer),{passive:true});
+/* ---------- wallpaper photo upload: downscale + store on device ---------- */
+document.addEventListener('change',e=>{
+  if(e.target.id!=='wpFile')return;
+  const file=e.target.files&&e.target.files[0]; if(!file)return;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      const max=1080, sc=Math.min(1,max/Math.max(img.width,img.height));
+      const cv=document.createElement('canvas');
+      cv.width=Math.max(1,Math.round(img.width*sc)); cv.height=Math.max(1,Math.round(img.height*sc));
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      try{
+        localStorage.setItem('gbt_wallpaper_img',cv.toDataURL('image/jpeg',0.82));
+        localStorage.setItem('gbt_wallpaper','custom');
+        applyWallpaper(); render(); toast('Wallpaper set 🖼️');
+      }catch(err){ toast('Photo too large for on-device storage'); }
+    };
+    img.onerror=()=>toast('Could not read that photo');
+    img.src=rd.result;
+  };
+  rd.readAsDataURL(file);
+});
 /* ---------- boot ---------- */
 document.body.dataset.glass=localStorage.getItem('gbt_glass')||'default';
+applyWallpaper();
 load();
 autoBackup(); save();
 S.tasks.forEach(syncReminder);
