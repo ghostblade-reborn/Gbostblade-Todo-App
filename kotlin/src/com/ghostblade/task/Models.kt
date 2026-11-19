@@ -107,7 +107,7 @@ fun TaskItem.toJson(): JSONObject {
 
 fun taskFromJson(o: JSONObject): TaskItem {
     val t = TaskItem(
-        id = o.optString("id"),
+        id = o.optString("id").ifBlank { uid() },
         title = o.optString("title"),
         notes = o.optString("notes", ""),
         projectId = if (o.isNull("projectId")) null else o.optString("projectId"),
