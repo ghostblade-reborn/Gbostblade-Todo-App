@@ -19,7 +19,7 @@
   --hi:rgba(255,255,255,.28);
   --text:#f5f5f7; --muted:rgba(235,235,245,.55);
   --red:#ff453a; --red2:#e44332; --green:#30d158; --orange:#ff9f0a; --blue:#0a84ff; --gold:#ffd60a;
-  --blur:blur(22px) saturate(180%);
+  --blur:blur(24px) saturate(200%);
   --shadow:0 10px 34px rgba(0,0,0,.42), inset 0 1px 0 var(--hi), inset 0 -1px 0 rgba(255,255,255,.04);
   --panel:#232329; --panel2:#2b2b33; --line:rgba(255,255,255,.09);
 }
@@ -30,16 +30,17 @@ html,body{margin:0;padding:0;color:var(--text);font-size:15px;background:var(--b
 button{font-family:inherit;cursor:pointer}
 /* aurora wallpaper the glass refracts */
 .wallpaper{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
-  radial-gradient(120% 90% at 85% -10%, rgba(94,92,230,.5), transparent 55%),
-  radial-gradient(100% 80% at -10% 25%, rgba(10,132,255,.38), transparent 55%),
-  radial-gradient(90% 70% at 110% 65%, rgba(255,55,95,.30), transparent 55%),
-  radial-gradient(120% 100% at 15% 110%, rgba(48,209,88,.20), transparent 55%),
-  linear-gradient(180deg,#0a0a14,#06060a)}
+  radial-gradient(120% 90% at 85% -10%, rgba(120,110,255,.65), transparent 55%),
+  radial-gradient(100% 80% at -10% 25%, rgba(20,150,255,.55), transparent 55%),
+  radial-gradient(90% 70% at 110% 65%, rgba(255,60,110,.45), transparent 55%),
+  radial-gradient(120% 100% at 15% 110%, rgba(50,220,120,.30), transparent 55%),
+  radial-gradient(70% 50% at 60% 45%, rgba(255,170,40,.18), transparent 60%),
+  linear-gradient(180deg,#0b0b18,#06060a)}
 .wallpaper::after{content:"";position:absolute;inset:0;background:radial-gradient(80% 50% at 50% 0%,rgba(255,255,255,.05),transparent 70%)}
 #app{max-width:640px;margin:0 auto;padding:0 0 118px}
 /* glass mixin look, applied per-element below */
 header.top{position:sticky;top:10px;z-index:5;margin:10px 12px 4px;padding:14px 16px 12px;border-radius:26px;
-  background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  background:linear-gradient(165deg,rgba(255,255,255,.16),rgba(255,255,255,.03) 42%,rgba(255,255,255,0) 62%),var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
   border:1px solid var(--stroke);box-shadow:var(--shadow)}
 header.top h1{font-size:22px;margin:0 0 2px;font-weight:700;letter-spacing:-.02em}
 header.top .sub{color:var(--muted);font-size:13px}
@@ -51,8 +52,8 @@ main{padding:6px 14px}
 .daygroup .today-lbl{color:var(--green)}
 /* tasks become individual glass pills */
 .task{display:flex;align-items:flex-start;gap:11px;padding:12px 13px;margin:0 0 9px;border-radius:20px;
-  background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
-  border:1px solid var(--stroke-soft);box-shadow:0 6px 22px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.16)}
+  background:linear-gradient(165deg,rgba(255,255,255,.15),rgba(255,255,255,.02) 45%,rgba(255,255,255,0) 65%),var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border:1px solid var(--stroke);box-shadow:0 6px 22px rgba(0,0,0,.30), inset 0 1px 1px rgba(255,255,255,.35), inset 0 -1px 1px rgba(255,255,255,.06)}
 .check{flex:0 0 auto;width:23px;height:23px;border-radius:50%;border:2px solid rgba(255,255,255,.45);background:rgba(255,255,255,.06);margin-top:1px;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
 .check.p1{border-color:var(--red);background:rgba(255,69,58,.20)}
 .check.p2{border-color:var(--orange)}
@@ -69,11 +70,11 @@ main{padding:6px 14px}
 /* floating glass tab bar */
 nav.bottom{position:fixed;left:14px;right:14px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:6;max-width:612px;margin:0 auto;
   display:flex;justify-content:space-around;padding:8px;border-radius:34px;
-  background:rgba(28,28,38,.48);-webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);
+  background:rgba(255,255,255,.10);-webkit-backdrop-filter:blur(28px) saturate(210%);backdrop-filter:blur(28px) saturate(210%);
   border:1px solid var(--stroke);box-shadow:0 16px 44px rgba(0,0,0,.5), inset 0 1px 0 var(--hi), inset 0 -1px 0 rgba(255,255,255,.05)}
 nav.bottom button{background:none;border:none;color:var(--muted);font-size:10.5px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 14px;border-radius:24px;transition:background .2s,color .2s}
 nav.bottom button .ic{font-size:20px;line-height:1}
-nav.bottom button.on{color:#fff;background:rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.30), 0 4px 14px rgba(0,0,0,.25)}
+nav.bottom button.on{color:#fff;background:linear-gradient(180deg,rgba(255,255,255,.34),rgba(255,255,255,.16));box-shadow:inset 0 1.5px 1px rgba(255,255,255,.55), inset 0 -1px 1px rgba(255,255,255,.12), 0 6px 18px rgba(0,0,0,.30)}
 /* glass FAB */
 #fab{position:fixed;right:18px;bottom:104px;z-index:7;width:57px;height:57px;border-radius:50%;color:#fff;font-size:31px;line-height:1;
   border:1px solid rgba(255,255,255,.35);
@@ -83,7 +84,7 @@ nav.bottom button.on{color:#fff;background:rgba(255,255,255,.14);box-shadow:inse
 #fab:active{filter:brightness(1.12)}
 /* glass sheets */
 .sheet-bg{position:fixed;inset:0;background:rgba(2,2,8,.45);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);z-index:10}
-.sheet{position:fixed;left:8px;right:8px;bottom:8px;z-index:11;border-radius:30px;padding:20px 18px 18px;max-height:88vh;overflow-y:auto;max-width:624px;margin:0 auto;
+.sheet{position:fixed;left:8px;right:8px;bottom:8px;z-index:11;border-radius:32px;padding:20px 18px 18px;max-height:88vh;overflow-y:auto;max-width:624px;margin:0 auto;
   background:rgba(32,32,44,.62);-webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);
   border:1px solid var(--stroke);box-shadow:0 -12px 50px rgba(0,0,0,.5), inset 0 1.5px 0 var(--hi)}
 .sheet::before{content:"";display:block;width:38px;height:5px;border-radius:3px;background:rgba(255,255,255,.35);margin:0 auto 14px}
@@ -99,21 +100,21 @@ textarea#rambleText,textarea#assistText,textarea#ioText{width:100%;border-radius
   background:rgba(255,255,255,.10);border:1px solid var(--stroke-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}
 .chip.red{border-color:rgba(255,69,58,.6);color:#ff9d97}
 .row2{display:flex;gap:8px}.row2>*{flex:1}
-.btn{border-radius:14px;padding:12px 16px;font-size:15px;font-weight:600;border:1px solid transparent}
+.btn{border-radius:999px;padding:12px 16px;font-size:15px;font-weight:600;border:1px solid transparent}
 .btn.red{color:#fff;width:100%;background:linear-gradient(180deg,#ff5a4d,#e44332);box-shadow:0 8px 22px rgba(228,67,50,.35), inset 0 1.5px 0 rgba(255,255,255,.45)}
 .btn.ghost{color:var(--text);width:100%;background:rgba(255,255,255,.09);border-color:var(--stroke-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,.16);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
 .btn.danger{background:transparent;color:#ff6961;width:100%}
 .btn.small{width:auto;padding:8px 14px;font-size:13.5px}
 label.lbl{display:block;color:var(--muted);font-size:12.5px;margin:8px 0 4px}
 /* glass cards + menu */
-.card{border-radius:24px;padding:15px 16px;margin:10px 0;background:var(--glass);
+.card{border-radius:26px;padding:15px 16px;margin:10px 0;background:linear-gradient(165deg,rgba(255,255,255,.14),rgba(255,255,255,.02) 45%,rgba(255,255,255,0) 65%),var(--glass);
   -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
   border:1px solid var(--stroke-soft);box-shadow:0 8px 28px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.17)}
 .card h4{margin:0 0 6px;font-size:15.5px;font-weight:700}
 .card .muted{color:var(--muted);font-size:13px;line-height:1.55}
 .menuitem{display:flex;align-items:center;gap:12px;width:100%;color:var(--text);padding:13px 14px;font-size:15px;text-align:left;margin:0 0 8px;
-  background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
-  border:1px solid var(--stroke-soft);border-radius:19px;box-shadow:inset 0 1px 0 rgba(255,255,255,.14)}
+  background:linear-gradient(165deg,rgba(255,255,255,.14),rgba(255,255,255,.02) 45%,rgba(255,255,255,0) 65%),var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border:1px solid var(--stroke);border-radius:22px;box-shadow:inset 0 1px 1px rgba(255,255,255,.30)}
 .menuitem .ic{font-size:19px;width:26px;text-align:center}
 .menuitem .tag{margin-left:auto;color:var(--gold);font-size:11px;font-weight:700;letter-spacing:.4px}
 .menuitem small{color:var(--muted);display:block;font-size:12.5px;margin-top:1px}
@@ -153,6 +154,11 @@ input[type=checkbox].asst-chk{accent-color:var(--red2)}
 @media (prefers-reduced-transparency: reduce){
   header.top,.task,.card,.menuitem,.sheet,nav.bottom,.toast{backdrop-filter:none;-webkit-backdrop-filter:none;background:#23232e}
 }
+
+/* ---- Glass variants: Clear / Default / Tinted ---- */
+body[data-glass="clear"]{--glass:rgba(255,255,255,.045);--stroke:rgba(255,255,255,.30);--stroke-soft:rgba(255,255,255,.18);--blur:blur(30px) saturate(230%)}
+body[data-glass="tinted"]{--glass:rgba(16,16,24,.52);--stroke:rgba(255,255,255,.12);--stroke-soft:rgba(255,255,255,.07);--blur:blur(18px) saturate(150%)}
+.chip.on{background:rgba(255,255,255,.24);border-color:rgba(255,255,255,.55);font-weight:700}
 </style>
 </head>
 <body>
@@ -443,6 +449,9 @@ function renderBrowse(){
   h+='<div class="daygroup">PRO — ALL UNLOCKED</div>';
   const pro=[['calendar','🗓️','Calendar view','Month grid of your tasks'],['stats','📈','Productivity','Streak, weekly chart, totals'],['insights','💡','Project insights','Progress & trends per project'],['history','🕘','Full history','Every creation & completion'],['ramble','🎙️','Ramble','Speak or type many tasks at once'],['assist','🤖','Task & Email Assist','Paste text → tasks · break tasks down'],['backups','💾','Backups','Auto snapshots · export · restore']];
   pro.forEach(([k,ic,n,d])=>{h+='<button class="menuitem" data-act="opensub" data-v="'+k+'"><span class="ic">'+ic+'</span><span>'+n+'<small>'+d+'</small></span><span class="tag">PRO</span></button>';});
+  const gv=localStorage.getItem('gbt_glass')||'default';
+  h+='<div class="daygroup">APPEARANCE</div><div class="card"><h4>🪟 Glass style</h4><div class="muted" style="margin-bottom:9px">Liquid Glass, your way — like iOS: Fully Clear, Default, or Fully Tinted.</div><div class="chips" style="margin:0">'
+    +[['clear','Fully Clear'],['default','Default'],['tinted','Fully Tinted']].map(([v,l])=>'<button class="chip'+(gv===v?' on':'')+'" data-act="glass" data-v="'+v+'">'+l+'</button>').join('')+'</div></div>';
   h+='<div class="card"><h4>GhostBlade Task</h4><div class="muted">Android edition · data lives on this device · reminders fire even when the app is closed and survive reboot.</div></div>';
   return h;
 }
@@ -637,6 +646,7 @@ document.addEventListener('click',e=>{
   const act=el.dataset.act, id=el.dataset.id;
   switch(act){
     case 'nav': view=el.dataset.v; sub=null; render(); break;
+    case 'glass': localStorage.setItem('gbt_glass',el.dataset.v); document.body.dataset.glass=el.dataset.v; render(); break;
     case 'opensub': sub=el.dataset.v; render(); break;
     case 'back': sub=null; render(); break;
     case 'openproject': sub='project:'+id; render(); break;
@@ -714,6 +724,7 @@ window.__gbtBack=function(){
   if(sub){sub=null; render(); return;}
 };
 /* ---------- boot ---------- */
+document.body.dataset.glass=localStorage.getItem('gbt_glass')||'default';
 load();
 autoBackup(); save();
 S.tasks.forEach(syncReminder);
