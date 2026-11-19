@@ -879,41 +879,520 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /* ---------------- quick add ---------------- */
+    /* ---------------- quick add (Todoist-style) ---------------- */
+
+    private var qaText = ""
+    private var qaPresetDate: String? = null
+    private var qaDate: String? = null
+    private var qaTime: String? = null
+    private var qaRecurrence: String? = null
+    private var qaRecSet = false
+    private var qaPriority: Int? = null
+    private var qaProjectSet = false
+    private var qaProjectId: String? = null
+    private var qaReminder: Int? = null
+    private var qaRemSet = false
+    private var qaLabelIds = mutableSetOf<String>()
+    private var qaNotes = ""
+    private var qaShowNotes = false
+    private var qaLocLat: Double? = null
+    private var qaLocLng: Double? = null
+    private var qaCursor: java.util.Calendar = java.util.Calendar.getInstance()
+    private var qaUpdating = false
 
     private fun openQuickAdd(presetDate: String?) {
+        qaText = ""
+        qaPresetDate = presetDate
+        qaDate = presetDate
+        qaTime = null
+        qaRecurrence = null; qaRecSet = false
+        qaPriority = null
+        qaProjectSet = false; qaProjectId = null
+        qaReminder = null; qaRemSet = false
+        qaLabelIds = mutableSetOf()
+        qaNotes = ""; qaShowNotes = false
+        qaLocLat = null; qaLocLng = null
+        qaCursor = java.util.Calendar.getInstance()
+        showSheet(buildQuickAdd())
+    }
+
+    private fun qaPreviewParse(): Parser.Parsed {
+        val p = Parser.parse(qaText)
+        if (qaDate != null) p.dueDate = qaDate
+        if (qaTime != null) p.dueTime = qaTime
+        if (qaRecSet) p.recurrence = qaRecurrence
+        if (qaPriority != null) p.priority = qaPriority!!
+        if (qaProjectSet) p.projectName = qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox"
+        return p
+    }
+
+    private fun qaPill(label: String, on: Boolean, click: () -> Unit): TextView {
+        val b = tv(label, 13f, if (on) Glass.TEXT else Glass.MUTED, on)
+        b.background = Glass.chip(this, on)
+        b.setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+        b.setOnClickListener { click() }
+        b.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(7f) }
+        return b
+    }
+
+    private fun buildQuickAdd(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Quick Add", 17f, Glass.TEXT, true))
-        val inp = input("e.g. Gym tomorrow at 7am every day #Health p2 for 45m")
-        if (presetDate != null) inp.setTag(presetDate)
+        val inp = input("e.g. Fix bike tire this weekend")
+        inp.setText(qaText)
+        inp.setSelection(inp.text.length)
         col.addView(inp)
         val chips = tv("", 12.5f, Glass.MUTED)
+        chips.layoutParams = lp(b = dp(4f))
         col.addView(chips)
-        fun submit() {
-            val raw = inp.text.toString().trim()
-            if (raw.isEmpty()) return
-            val p = Parser.parse(raw)
-            if (p.title.isEmpty()) { toast("Add a title too"); return }
-            val base = TaskItem(id = uid(), title = p.title)
-            if (presetDate != null && p.dueDate == null) base.dueDate = presetDate
-            Store.addTaskFromParse(p, base)
-            Sfx.add(); closeSheet(); render(); toast("Task added ✅")
+        val popupBox = LinearLayout(this); popupBox.orientation = LinearLayout.VERTICAL
+        popupBox.background = Glass.panel(this, 18f, strong = true)
+        popupBox.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        popupBox.layoutParams = lp(b = dp(8f))
+        popupBox.visibility = View.GONE
+        col.addView(popupBox)
+        var notesIn: EditText? = null
+        if (qaShowNotes) {
+            notesIn = input("Description / notes", qaNotes, multi = true)
+            col.addView(notesIn)
         }
+        fun refreshChips() {
+            chips.text = Parser.describe(qaPreviewParse()).joinToString("   ") +
+                (if (qaRemSet) "   🔔" else "") + (if (qaLocLat != null) "   📍" else "") +
+                (if (qaLabelIds.isNotEmpty()) "   🏷️ " + qaLabelIds.size else "")
+        }
+        refreshChips()
         inp.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(e: Editable?) {
-                val p = Parser.parse(e?.toString() ?: "")
-                chips.text = Parser.describe(p).joinToString("   ")
+                if (qaUpdating) return
+                qaText = e?.toString() ?: ""
+                refreshChips()
+                qaSuggestionPopup(popupBox, inp)
             }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
         inp.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE) { submit(); true } else false
+            if (actionId == EditorInfo.IME_ACTION_DONE) { qaSubmit(inp, notesIn); true } else false
         }
-        val add = accentBtn("Add task") { submit() }
+        // toolbar: + · Date · Priority · Reminders · Project .... send
+        val bar = LinearLayout(this); bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER_VERTICAL
+        bar.layoutParams = lp(t = dp(6f))
+        bar.addView(qaPill("＋", false) { showSheet(buildQaPlusMenu()) })
+        val dateLbl = when (qaDate) {
+            null -> "📅 Date"
+            Dates.today() -> "📅 Today"
+            Dates.addDays(Dates.today(), 1) -> "📅 Tomorrow"
+            else -> "📅 " + Dates.fmtDay(qaDate!!)
+        }
+        bar.addView(qaPill(dateLbl, qaDate != null) { showSheet(buildQaDatePicker()) })
+        bar.addView(qaPill(if (qaPriority != null) "⚑ P" + qaPriority else "⚑ Priority", qaPriority != null) { showSheet(buildQaPriority()) })
+        bar.addView(qaPill("⏰ Reminders", qaRemSet) { showSheet(buildQaReminders()) })
+        val projName = if (qaProjectSet) qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox" else "Inbox"
+        bar.addView(qaPill("▣ $projName", qaProjectSet) { showSheet(buildQaProjects()) })
+        val spacer = View(this); spacer.layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        bar.addView(spacer)
+        val send = tv("↑", 20f, 0xFFFFFFFF.toInt(), true)
+        send.gravity = Gravity.CENTER
+        send.background = Glass.accentGradient(this, 999f)
+        send.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
+        send.setOnClickListener { qaSubmit(inp, notesIn) }
+        bar.addView(send)
+        col.addView(bar)
+        col.post { inp.requestFocus() }
+        return col
+    }
+
+    private fun qaSuggestionPopup(popupBox: LinearLayout, inp: EditText) {
+        val lastWord = qaText.split(" ", "\n").lastOrNull() ?: ""
+        popupBox.removeAllViews()
+        when {
+            lastWord.startsWith("#") -> {
+                val q = lastWord.substring(1).lowercase()
+                val matches = Store.state.projects.filter { q.isEmpty() || it.name.lowercase().contains(q) }
+                if (matches.isEmpty()) { popupBox.visibility = View.GONE; return }
+                popupBox.addView(tv("MY PROJECTS", 11f, Glass.MUTED, true))
+                matches.forEach { p ->
+                    val row = tv("#  " + p.name, 14.5f)
+                    row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
+                    row.setOnClickListener {
+                        qaProjectSet = true; qaProjectId = p.id
+                        qaUpdating = true
+                        qaText = qaText.removeSuffix(lastWord).trimEnd()
+                        inp.setText(qaText); inp.setSelection(qaText.length)
+                        qaUpdating = false
+                        popupBox.visibility = View.GONE
+                        showSheet(buildQuickAdd())
+                    }
+                    popupBox.addView(row)
+                }
+                popupBox.visibility = View.VISIBLE
+            }
+            qaText.contains("!!") && qaPriority == null -> {
+                popupBox.addView(tv("PRIORITY", 11f, Glass.MUTED, true))
+                val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
+                flags.forEach { (n, color) ->
+                    val row = tv("⚑  Priority $n", 14.5f, color)
+                    row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
+                    row.setOnClickListener {
+                        qaPriority = n
+                        qaUpdating = true
+                        qaText = qaText.replace("!!", "").replace(Regex("""\s+"""), " ")
+                        inp.setText(qaText); inp.setSelection(qaText.length)
+                        qaUpdating = false
+                        popupBox.visibility = View.GONE
+                        showSheet(buildQuickAdd())
+                    }
+                    popupBox.addView(row)
+                }
+                popupBox.visibility = View.VISIBLE
+            }
+            else -> popupBox.visibility = View.GONE
+        }
+    }
+
+    private fun qaSubmit(inp: EditText, notesIn: EditText?) {
+        qaText = inp.text.toString()
+        if (notesIn != null) qaNotes = notesIn.text.toString()
+        val raw = qaText.trim()
+        if (raw.isEmpty()) return
+        val p = Parser.parse(raw)
+        if (p.title.isEmpty()) { toast("Add a title too"); return }
+        val base = TaskItem(id = uid(), title = p.title)
+        if (qaPresetDate != null && p.dueDate == null) base.dueDate = qaPresetDate
+        val t = Store.addTaskFromParse(p, base)
+        if (qaDate != null) t.dueDate = qaDate
+        if (qaTime != null) t.dueTime = qaTime
+        if (qaRecSet) t.recurrence = qaRecurrence
+        if (qaPriority != null) t.priority = qaPriority!!
+        if (qaProjectSet) t.projectId = qaProjectId
+        if (qaRemSet) t.reminderOffsetMin = qaReminder
+        qaLabelIds.forEach { if (!t.labelIds.contains(it)) t.labelIds.add(it) }
+        if (qaNotes.isNotEmpty()) t.notes = qaNotes
+        if (qaLocLat != null) { t.locLat = qaLocLat; t.locLng = qaLocLng }
+        Reminders.sync(this, t)
+        Reminders.syncGeo(this, t)
+        Store.save()
+        Sfx.add(); closeSheet(); render(); toast("Task added ✅")
+    }
+
+    /* ----- Quick Add: + menu ----- */
+
+    private fun qaMenuRow(icon: String, title: String, tag: String?, click: () -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(6f), dp(12f), dp(6f), dp(12f))
+        val ic = tv(icon, 16f); ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+        row.addView(ic)
+        val tt = tv(title, 15f); tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        row.addView(tt)
+        if (tag != null) row.addView(tv(tag, 11f, Glass.GOLD, true))
+        row.setOnClickListener { click() }
+        return row
+    }
+
+    private fun buildQaPlusMenu(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(qaMenuRow("✂️", "Extract tasks…", null) { closeSheet(); sub = "assist"; render() })
+        col.addView(qaMenuRow("☰", "Description", null) { qaShowNotes = true; showSheet(buildQuickAdd()) })
+        col.addView(qaMenuRow("🏷️", "Labels", null) { showSheet(buildQaLabels()) })
+        col.addView(qaMenuRow("🎯", "Deadline", "PRO") { showSheet(buildQaDatePicker()) })
+        col.addView(qaMenuRow("📍", "Location", "PRO") { captureLocationQa() })
+        val back = ghostBtn("← Back") { showSheet(buildQuickAdd()) }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
+        return col
+    }
+
+    private fun buildQaLabels(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Labels", 16f, Glass.TEXT, true))
+        if (Store.state.labels.isEmpty()) col.addView(tv("No labels yet — create one below, or type @name in the task text.", 13f, Glass.MUTED))
+        Store.state.labels.forEach { l ->
+            val on = qaLabelIds.contains(l.id)
+            val row = tv((if (on) "☑ " else "☐ ") + "@" + l.name, 15f)
+            row.setPadding(dp(4f), dp(11f), dp(4f), dp(11f))
+            row.setOnClickListener {
+                if (on) qaLabelIds.remove(l.id) else qaLabelIds.add(l.id)
+                Sfx.tick()
+                showSheet(buildQaLabels())
+            }
+            col.addView(row)
+        }
+        val add = ghostBtn("＋ New label") {
+            promptText("Label name:") { name ->
+                val l = Store.labelByName(name)
+                qaLabelIds.add(l.id)
+                Store.save()
+                showSheet(buildQaLabels())
+            }
+        }
+        add.layoutParams = lp(t = dp(8f), b = dp(8f))
         col.addView(add)
-        showSheet(col)
-        inp.requestFocus()
+        val done = accentBtn("Done") { showSheet(buildQuickAdd()) }
+        col.addView(done)
+        return col
+    }
+
+    /* ----- Quick Add: priority ----- */
+
+    private fun buildQaPriority(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Priority", 16f, Glass.TEXT, true))
+        val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
+        flags.forEach { (n, color) ->
+            val row = tv("⚑  Priority $n" + if (qaPriority == n) "  ✓" else "", 15.5f, color)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener { qaPriority = n; Sfx.tick(); showSheet(buildQuickAdd()) }
+            col.addView(row)
+        }
+        return col
+    }
+
+    /* ----- Quick Add: projects ----- */
+
+    private fun buildQaProjects(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("My Projects", 16f, Glass.TEXT, true))
+        val inboxRow = tv("▣  Inbox" + if (qaProjectSet && qaProjectId == null) "  ✓" else "", 15f)
+        inboxRow.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+        inboxRow.setOnClickListener { qaProjectSet = true; qaProjectId = null; showSheet(buildQuickAdd()) }
+        col.addView(inboxRow)
+        Store.state.projects.forEach { p ->
+            val row = tv("#  " + p.name + if (qaProjectSet && qaProjectId == p.id) "  ✓" else "", 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener { qaProjectSet = true; qaProjectId = p.id; showSheet(buildQuickAdd()) }
+            col.addView(row)
+        }
+        val add = ghostBtn("＋ New project") {
+            promptText("Project name:") { name ->
+                val p = Store.projByName(name)
+                qaProjectSet = true; qaProjectId = p.id
+                Store.save()
+                showSheet(buildQuickAdd())
+            }
+        }
+        add.layoutParams = lp(t = dp(8f))
+        col.addView(add)
+        return col
+    }
+
+    /* ----- Quick Add: reminders ----- */
+
+    private fun buildQaReminders(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Reminders", 16f, Glass.TEXT, true))
+        val parsed = Parser.parse(qaText)
+        if (qaDate == null && parsed.dueDate == null) {
+            val hint = tv("Add a day and time to the task first — pick a date, then choose a reminder.", 13f, Glass.OVERDUE)
+            hint.layoutParams = lp(t = dp(6f), b = dp(6f))
+            col.addView(hint)
+        }
+        val opts = listOf<Pair<String, Int?>>(
+            "No reminder" to null, "At time of task" to 0, "10 minutes before" to 10,
+            "30 minutes before" to 30, "1 hour before" to 60, "1 day before" to 1440
+        )
+        opts.forEach { (lbl, v) ->
+            val on = qaRemSet && qaReminder == v
+            val row = tv("⏰  $lbl" + if (on) "  ✓" else "", 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener { qaRemSet = true; qaReminder = v; Sfx.tick(); showSheet(buildQuickAdd()) }
+            col.addView(row)
+        }
+        return col
+    }
+
+    /* ----- Quick Add: date picker ----- */
+
+    private fun buildQaDatePicker(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Date", 17f, Glass.TEXT, true))
+        val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+        fun quickRow(icon: String, lbl: String, date: String) {
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            val ic = tv(icon, 16f); ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+            row.addView(ic)
+            val tt = tv(lbl + if (qaDate == date) "  ✓" else "", 15f)
+            tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(tt)
+            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.MUTED))
+            row.setOnClickListener { qaDate = date; Sfx.tick(); showSheet(buildQaDatePicker()) }
+            col.addView(row)
+        }
+        quickRow("📅", "Today", Dates.today())
+        quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
+        quickRow("⏭️", "Next week", Dates.addDays(Dates.today(), 7))
+        if (qaDate != null) {
+            val clr = tv("✕  Clear date", 14.5f, Glass.OVERDUE)
+            clr.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
+            clr.setOnClickListener { qaDate = null; qaTime = null; showSheet(buildQaDatePicker()) }
+            col.addView(clr)
+        }
+        // month grid
+        val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.layoutParams = lp(t = dp(10f), b = dp(4f))
+        val prev = tv("‹", 22f, Glass.TEXT, true); prev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        prev.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, -1); showSheet(buildQaDatePicker()) }
+        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 14.5f, Glass.TEXT, true)
+        mt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); mt.gravity = Gravity.CENTER
+        val next = tv("›", 22f, Glass.TEXT, true); next.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        next.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, 1); showSheet(buildQaDatePicker()) }
+        head.addView(prev); head.addView(mt); head.addView(next)
+        col.addView(head)
+        val dowRow = LinearLayout(this); dowRow.orientation = LinearLayout.HORIZONTAL
+        listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
+            val t = tv(d, 11f, Glass.MUTED, true); t.gravity = Gravity.CENTER
+            t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            dowRow.addView(t)
+        }
+        col.addView(dowRow)
+        val y = qaCursor.get(java.util.Calendar.YEAR)
+        val mo = qaCursor.get(java.util.Calendar.MONTH)
+        val first = java.util.Calendar.getInstance(); first.set(y, mo, 1, 0, 0, 0)
+        val startDow = (Dates.jsDayOfWeek(first) + 6) % 7 // Monday-first
+        val dim = first.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+        var day = 1
+        for (week in 0 until 6) {
+            if (day > dim) break
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            for (dowI in 0 until 7) {
+                val cell = tv("", 13.5f); cell.gravity = Gravity.CENTER
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f)
+                if (!(week == 0 && dowI < startDow) && day <= dim) {
+                    val ds = y.toString() + "-" + (mo + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
+                    cell.text = day.toString()
+                    when {
+                        ds == qaDate -> { cell.background = Glass.accentGradient(this, 999f); cell.setTextColor(0xFFFFFFFF.toInt()) }
+                        ds == Dates.today() -> cell.setTextColor(Accents.base(this))
+                    }
+                    val dd = ds
+                    cell.setOnClickListener { qaDate = dd; Sfx.tick(); showSheet(buildQaDatePicker()) }
+                    day++
+                }
+                rowL.addView(cell)
+            }
+            col.addView(rowL)
+        }
+        // time + repeat rows
+        val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { showSheet(buildQaTimePicker()) }
+        col.addView(timeRow)
+        val recLbl = when {
+            !qaRecSet || qaRecurrence == null -> "Repeat"
+            qaRecurrence == "daily" -> "Repeat · Daily"
+            qaRecurrence == "weekly" -> "Repeat · Weekly"
+            qaRecurrence == "monthly" -> "Repeat · Monthly"
+            else -> "Repeat · " + qaRecurrence
+        }
+        col.addView(qaMenuRow("🔁", recLbl, null) { showSheet(buildQaRepeat()) })
+        val save = accentBtn("Save") { showSheet(buildQuickAdd()) }
+        save.layoutParams = lp(t = dp(10f))
+        col.addView(save)
+        return col
+    }
+
+    private fun buildQaTimePicker(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Time", 16f, Glass.TEXT, true))
+        val inp = input("HH:mm — e.g. 18:30", qaTime ?: "")
+        col.addView(inp)
+        val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
+        listOf("07:00", "09:00", "12:00", "18:00", "21:00").forEach { tm ->
+            val ch = chipBtn(tm, qaTime == tm) { qaTime = tm; showSheet(buildQaDatePicker()) }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            chipsRow.addView(ch)
+        }
+        col.addView(chipsRow)
+        val save = accentBtn("Save time") {
+            val v = inp.text.toString().trim()
+            qaTime = if (Regex("""^([01]?\d|2[0-3]):[0-5]\d$""").matches(v)) {
+                val parts = v.split(":")
+                parts[0].padStart(2, '0') + ":" + parts[1]
+            } else qaTime
+            showSheet(buildQaDatePicker())
+        }
+        save.layoutParams = lp(t = dp(10f), b = dp(6f))
+        col.addView(save)
+        if (qaTime != null) {
+            val clr = ghostBtn("Clear time") { qaTime = null; showSheet(buildQaDatePicker()) }
+            col.addView(clr)
+        }
+        return col
+    }
+
+    private fun buildQaRepeat(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Repeat", 16f, Glass.TEXT, true))
+        val opts = listOf<Pair<String, String?>>(
+            "No repeat" to null, "Every day" to "daily", "Every week" to "weekly", "Every month" to "monthly",
+            "Every Sunday" to "weekly:0", "Every Monday" to "weekly:1", "Every Tuesday" to "weekly:2",
+            "Every Wednesday" to "weekly:3", "Every Thursday" to "weekly:4", "Every Friday" to "weekly:5",
+            "Every Saturday" to "weekly:6"
+        )
+        opts.forEach { (lbl, v) ->
+            val on = qaRecSet && qaRecurrence == v
+            val row = tv("🔁  $lbl" + if (on) "  ✓" else "", 15f)
+            row.setPadding(dp(4f), dp(11f), dp(4f), dp(11f))
+            row.setOnClickListener {
+                qaRecSet = true; qaRecurrence = v
+                if (v != null && v.startsWith("weekly:") && qaDate == null) {
+                    qaDate = Dates.nextWeekday(v.substringAfter(':').toInt())
+                }
+                Sfx.tick()
+                showSheet(buildQaDatePicker())
+            }
+            col.addView(row)
+        }
+        return col
+    }
+
+    /* ----- Quick Add: location capture ----- */
+
+    private fun captureLocationQa() {
+        if (Build.VERSION.SDK_INT >= 23 &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 77)
+            toast("Allow location permission, then tap again")
+            showSheet(buildQuickAdd())
+            return
+        }
+        val lm = getSystemService(LOCATION_SERVICE) as? LocationManager
+        if (lm == null) { toast("Location unavailable"); showSheet(buildQuickAdd()); return }
+        toast("Getting your location…")
+        fun apply(lat: Double, lng: Double) {
+            qaLocLat = lat; qaLocLng = lng
+            toast("Location attached 📍")
+            showSheet(buildQuickAdd())
+        }
+        try {
+            var best: Location? = null
+            for (p in lm.getProviders(true)) {
+                val l = lm.getLastKnownLocation(p)
+                if (l != null && (best == null || l.time > best!!.time)) best = l
+            }
+            val b = best
+            if (b != null && System.currentTimeMillis() - b.time < 10 * 60 * 1000) {
+                apply(b.latitude, b.longitude)
+                return
+            }
+            val listener = object : LocationListener {
+                override fun onLocationChanged(l: Location) = apply(l.latitude, l.longitude)
+                override fun onStatusChanged(p: String?, s: Int, bundle: Bundle?) {}
+                override fun onProviderEnabled(p: String) {}
+                override fun onProviderDisabled(p: String) {}
+            }
+            var any = false
+            try { lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper()); any = true } catch (e: Exception) {}
+            try { lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper()); any = true } catch (e: Exception) {}
+            if (!any) { toast("Could not get location — check GPS"); showSheet(buildQuickAdd()) }
+        } catch (e: SecurityException) {
+            toast("Location permission needed")
+            showSheet(buildQuickAdd())
+        }
     }
 
     /* ---------------- editor ---------------- */
