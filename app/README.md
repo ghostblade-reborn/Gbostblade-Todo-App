@@ -7,7 +7,7 @@ The installable Android edition of GhostBlade Task — now **100% Kotlin**.
 | **App name** | GhostBlade Task |
 | **Package** | `com.ghostblade.task` |
 | **Version** | 3.1-kotlin (versionCode 15) |
-| **File** | `GhostBladeTask-Kotlin-v3.1.apk` (751 KB) |
+| **File** | `GhostBlade Task v4.apk` (751 KB) |
 | **Requires** | Android 7.0 (API 24) or newer |
 | **SHA-256** | `0c7b0e6d610ffa825ca8aa1858a489b4ec8fb2534dbf48c989ffa6a4bd1659d3` |
 
@@ -17,7 +17,7 @@ Get the APK from the [**Releases**](../../releases) section of this repo.
 
 ## Install
 
-1. Download `GhostBladeTask-Kotlin-v3.1.apk` to your phone.
+1. Download `GhostBlade Task v4.apk` to your phone.
 2. Open the file and tap **Install**. If Android asks, allow
    "Install unknown apps" for your browser/file manager — this is normal
    for apps installed outside the Play Store.
