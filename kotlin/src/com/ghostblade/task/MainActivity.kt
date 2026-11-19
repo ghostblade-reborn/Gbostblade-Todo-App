@@ -74,6 +74,7 @@ class MainActivity : Activity() {
     private lateinit var undoBar: LinearLayout
     private lateinit var mainColumn: LinearLayout
     private lateinit var fabBtn: TextView
+    private lateinit var headerCard: LinearLayout
     private var undoWasVisible = false
     private val handler = android.os.Handler(Looper.getMainLooper())
     private var undoHide: Runnable? = null
@@ -82,7 +83,7 @@ class MainActivity : Activity() {
 
     /* ---------------- view builders ---------------- */
 
-    private fun tv(text: String, size: Float = 15f, color: Int = Glass.TEXT, bold: Boolean = false): TextView {
+    private fun tv(text: String, size: Float = 15f, color: Int = Glass.text(this@MainActivity), bold: Boolean = false): TextView {
         val t = TextView(this)
         t.text = text
         t.textSize = size
@@ -145,8 +146,8 @@ class MainActivity : Activity() {
         e.hint = hint
         e.setText(value)
         e.textSize = 15f
-        e.setTextColor(Glass.TEXT)
-        e.setHintTextColor(Glass.MUTED)
+        e.setTextColor(Glass.text(this@MainActivity))
+        e.setHintTextColor(Glass.muted(this@MainActivity))
         e.background = Glass.panel(this, 13f)
         e.setPadding(dp(12f), dp(11f), dp(12f), dp(11f))
         if (!multi) e.setSingleLine(true)
@@ -166,19 +167,19 @@ class MainActivity : Activity() {
     }
 
     private fun label(text: String): TextView {
-        val l = tv(text, 12.5f, Glass.MUTED)
+        val l = tv(text, 12.5f, Glass.muted(this@MainActivity))
         l.layoutParams = lp(t = dp(8f), b = dp(4f))
         return l
     }
 
     private fun dayGroup(text: String): TextView {
-        val l = tv(text, 12.5f, Glass.MUTED, true)
+        val l = tv(text, 12.5f, Glass.muted(this@MainActivity), true)
         l.layoutParams = lp(t = dp(16f), b = dp(8f))
         return l
     }
 
     private fun emptyView(emoji: String, text: String): TextView {
-        val t = tv("$emoji\n$text", 14f, Glass.MUTED)
+        val t = tv("$emoji\n$text", 14f, Glass.muted(this@MainActivity))
         t.gravity = Gravity.CENTER
         t.setLineSpacing(dp(4f).toFloat(), 1.2f)
         t.setPadding(dp(20f), dp(38f), dp(20f), dp(38f))
@@ -218,14 +219,15 @@ class MainActivity : Activity() {
         // header (glass card)
         val header = LinearLayout(this)
         header.orientation = LinearLayout.VERTICAL
+        headerCard = header
         header.background = Glass.panel(this, 26f)
         header.setPadding(dp(16f), dp(14f), dp(16f), dp(12f))
         val hp = FrameLayout.LayoutParams(-1, -2)
         hp.setMargins(dp(12f), dp(10f), dp(12f), dp(4f))
         header.layoutParams = hp
         Glass.elevate(this, header, 26f, 10f)
-        headerTitle = tv("Today", 22f, Glass.TEXT, true)
-        headerSub = tv("", 13f, Glass.MUTED)
+        headerTitle = tv("Today", 22f, Glass.text(this@MainActivity), true)
+        headerSub = tv("", 13f, Glass.muted(this@MainActivity))
         headerSub.layoutParams = lp(t = dp(2f))
         val progWrap = FrameLayout(this)
         progWrap.background = Glass.chip(this, false)
@@ -291,6 +293,7 @@ class MainActivity : Activity() {
         root.addView(sheetRoot, FrameLayout.LayoutParams(-1, -1))
 
         applyWallpaperFrost()
+        applyStatusBar()
         setContentView(root)
     }
 
@@ -391,7 +394,7 @@ class MainActivity : Activity() {
             b.setPadding(dp(14f), dp(7f), dp(14f), dp(7f))
             if (on) b.background = Glass.chip(this, true)
             val icT = tv(ic, 19f); icT.gravity = Gravity.CENTER
-            val lbT = tv(lbl, 10.5f, if (on) Glass.TEXT else Glass.MUTED, on); lbT.gravity = Gravity.CENTER
+            val lbT = tv(lbl, 10.5f, if (on) Glass.text(this@MainActivity) else Glass.muted(this@MainActivity), on); lbT.gravity = Gravity.CENTER
             b.addView(icT); b.addView(lbT)
             b.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             b.setOnClickListener {
@@ -449,7 +452,7 @@ class MainActivity : Activity() {
         body.addView(title)
         val meta = metaText(t)
         if (meta.isNotEmpty()) {
-            val m = tv(meta, 12.5f, Glass.MUTED)
+            val m = tv(meta, 12.5f, Glass.muted(this@MainActivity))
             m.layoutParams = lp(t = dp(3f))
             body.addView(m)
         }
@@ -510,12 +513,12 @@ class MainActivity : Activity() {
         val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         val greet = if (h < 12) "Good morning" else if (h < 17) "Good afternoon" else "Good evening"
         val icon = if (h < 12) "☀️" else if (h < 17) "🌤️" else "🌙"
-        c.addView(tv("$icon $greet, Sir", 15.5f, Glass.TEXT, true))
+        c.addView(tv("$icon $greet, Sir", 15.5f, Glass.text(this@MainActivity), true))
         val over = Store.state.tasks.count { Dates.isOverdue(it) }
         val todayN = Store.state.tasks.count { it.dueDate == Dates.today() }
         val sub2 = tv(
             "$todayN tasks scheduled today" + if (over > 0) " · $over overdue" else " · nothing overdue 🎉",
-            13f, Glass.MUTED
+            13f, Glass.muted(this@MainActivity)
         )
         sub2.layoutParams = lp(t = dp(4f))
         c.addView(sub2)
@@ -561,7 +564,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
         col.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         col.addView(tv(title, 15f))
-        if (smallTxt != null) col.addView(tv(smallTxt, 12.5f, Glass.MUTED))
+        if (smallTxt != null) col.addView(tv(smallTxt, 12.5f, Glass.muted(this@MainActivity)))
         row.addView(col)
         if (tag != null) row.addView(tv(tag, 11f, Glass.GOLD, true))
         row.setOnClickListener { Sfx.tap(); click() }
@@ -572,7 +575,7 @@ class MainActivity : Activity() {
     private fun renderBrowse() {
         content.addView(menuItem("🔍", "Search tasks", "Find anything, fast", null) { sub = "search"; render() })
         content.addView(dayGroup("PROJECTS"))
-        if (Store.state.projects.isEmpty()) content.addView(tv("No projects yet — add one with #Name in Quick Add.", 13f, Glass.MUTED))
+        if (Store.state.projects.isEmpty()) content.addView(tv("No projects yet — add one with #Name in Quick Add.", 13f, Glass.muted(this@MainActivity)))
         Store.state.projects.forEach { p ->
             val n = Store.state.tasks.count { it.projectId == p.id }
             content.addView(menuItem("📁", p.name, "$n open tasks", null) { sub = "project:" + p.id; render() })
@@ -590,7 +593,7 @@ class MainActivity : Activity() {
             }
         })
         content.addView(dayGroup("LABELS"))
-        if (Store.state.labels.isEmpty()) content.addView(tv("Tag any task with @label in Quick Add — e.g. \"Call mom @family\".", 13f, Glass.MUTED))
+        if (Store.state.labels.isEmpty()) content.addView(tv("Tag any task with @label in Quick Add — e.g. \"Call mom @family\".", 13f, Glass.muted(this@MainActivity)))
         Store.state.labels.forEach { l ->
             val n = Store.state.tasks.count { it.labelIds.contains(l.id) }
             content.addView(menuItem("🏷️", "@" + l.name, "$n open tasks", null) { sub = "label:" + l.id; render() })
@@ -610,8 +613,8 @@ class MainActivity : Activity() {
         pro.forEach { (k, ic, n, d) -> content.addView(menuItem(ic, n, d, "PRO") { sub = k; render() }) }
         content.addView(appearanceCard())
         val about = card()
-        about.addView(tv("GhostBlade Task", 15.5f, Glass.TEXT, true))
-        val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, Glass.MUTED)
+        about.addView(tv("GhostBlade Task", 15.5f, Glass.text(this@MainActivity), true))
+        val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, Glass.muted(this@MainActivity))
         ab.layoutParams = lp(t = dp(4f))
         about.addView(ab)
         content.addView(about)
@@ -619,7 +622,18 @@ class MainActivity : Activity() {
 
     private fun appearanceCard(): LinearLayout {
         val c = card()
-        c.addView(tv("🪟 Appearance", 15.5f, Glass.TEXT, true))
+        c.addView(tv("🪟 Appearance", 15.5f, Glass.text(this@MainActivity), true))
+        c.addView(label("Theme"))
+        val tRow = LinearLayout(this); tRow.orientation = LinearLayout.HORIZONTAL
+        listOf("aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
+            val ch = chipBtn(l, Prefs.theme(this) == v) { Prefs.set(this, "theme", v); applyTheme() }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            tRow.addView(ch)
+        }
+        c.addView(tRow)
+        val tNote = tv("Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 12f, Glass.muted(this@MainActivity))
+        tNote.layoutParams = lp(t = dp(4f), b = dp(2f))
+        c.addView(tNote)
         c.addView(label("Glass style"))
         val gRow = LinearLayout(this); gRow.orientation = LinearLayout.HORIZONTAL
         listOf("clear" to "Fully Clear", "default" to "Default", "tinted" to "Fully Tinted").forEach { (v, l) ->
@@ -658,6 +672,17 @@ class MainActivity : Activity() {
             aRow.addView(sw)
         }
         c.addView(aRow)
+        c.addView(label("Red text"))
+        val rRow = LinearLayout(this); rRow.orientation = LinearLayout.HORIZONTAL
+        listOf(true to "🔴 On", false to "⚪ Off").forEach { (v, l) ->
+            val ch = chipBtn(l, Prefs.redText(this) == v) { Prefs.setBool(this, "red_text", v); render() }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            rRow.addView(ch)
+        }
+        c.addView(rRow)
+        val rNote = tv("Detail lines (dates, subtitles, meta) in your accent colour — the Apple Music look. Pairs best with crimson or pink.", 12f, Glass.muted(this@MainActivity))
+        rNote.layoutParams = lp(t = dp(4f), b = dp(2f))
+        c.addView(rNote)
         c.addView(label("Background wallpaper"))
         val wRow = LinearLayout(this); wRow.orientation = LinearLayout.HORIZONTAL
         listOf("aurora", "sunset", "ocean", "forest", "crimson", "mono").forEach { name ->
@@ -703,6 +728,25 @@ class MainActivity : Activity() {
     private fun refreshWallpaper() {
         wallpaperHolder.removeAllViews()
         wallpaperHolder.addView(Glass.wallpaperView(this), FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** Status bar follows the theme: dark icons on the white frost theme. */
+    private fun applyStatusBar() {
+        val white = Glass.isWhite(this)
+        window.statusBarColor = if (white) 0xFFF2F2F6.toInt() else 0xFF06060A.toInt()
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (white) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0
+    }
+
+    /** Re-skin the persistent chrome (header, nav, undo bar) after a theme
+     *  change; screens and sheets pick the theme up as they render. */
+    private fun applyTheme() {
+        refreshWallpaper()
+        headerCard.background = Glass.panel(this, 26f)
+        navBar.background = Glass.panel(this, 34f, strong = true)
+        undoBar.background = Glass.panel(this, 22f, strong = true)
+        applyStatusBar()
+        render()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -991,7 +1035,7 @@ class MainActivity : Activity() {
     }
 
     private fun qaPill(label: String, on: Boolean, click: () -> Unit): TextView {
-        val b = tv(label, 13f, Glass.TEXT, on)
+        val b = tv(label, 13f, Glass.text(this@MainActivity), on)
         b.background = Glass.sheetChip(this, on)
         b.setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
         b.setOnClickListener { click() }
@@ -1017,7 +1061,7 @@ class MainActivity : Activity() {
         send.setOnClickListener { qaSubmit(inp, notesIn) }
         inputRow.addView(send)
         col.addView(inputRow)
-        val chips = tv("", 12.5f, Glass.MUTED)
+        val chips = tv("", 12.5f, Glass.muted(this@MainActivity))
         chips.layoutParams = lp(b = dp(4f))
         col.addView(chips)
         val popupBox = LinearLayout(this); popupBox.orientation = LinearLayout.VERTICAL
@@ -1082,7 +1126,7 @@ class MainActivity : Activity() {
                 val q = lastWord.substring(1).lowercase()
                 val matches = Store.state.projects.filter { q.isEmpty() || it.name.lowercase().contains(q) }
                 if (matches.isEmpty()) { popupBox.visibility = View.GONE; return }
-                popupBox.addView(tv("MY PROJECTS", 11f, Glass.MUTED, true))
+                popupBox.addView(tv("MY PROJECTS", 11f, Glass.muted(this@MainActivity), true))
                 matches.forEach { p ->
                     val row = tv("#  " + p.name, 14.5f)
                     row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
@@ -1100,7 +1144,7 @@ class MainActivity : Activity() {
                 popupBox.visibility = View.VISIBLE
             }
             qaText.contains("!!") && qaPriority == null -> {
-                popupBox.addView(tv("PRIORITY", 11f, Glass.MUTED, true))
+                popupBox.addView(tv("PRIORITY", 11f, Glass.muted(this@MainActivity), true))
                 val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
                 flags.forEach { (n, color) ->
                     val row = tv("⚑  Priority $n", 14.5f, color)
@@ -1177,8 +1221,8 @@ class MainActivity : Activity() {
 
     private fun buildQaLabels(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Labels", 16f, Glass.TEXT, true))
-        if (Store.state.labels.isEmpty()) col.addView(tv("No labels yet — create one below, or type @name in the task text.", 13f, Glass.MUTED))
+        col.addView(tv("Labels", 16f, Glass.text(this@MainActivity), true))
+        if (Store.state.labels.isEmpty()) col.addView(tv("No labels yet — create one below, or type @name in the task text.", 13f, Glass.muted(this@MainActivity)))
         Store.state.labels.forEach { l ->
             val on = qaLabelIds.contains(l.id)
             val row = tv((if (on) "☑ " else "☐ ") + "@" + l.name, 15f)
@@ -1209,7 +1253,7 @@ class MainActivity : Activity() {
 
     private fun buildQaPriority(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Priority", 16f, Glass.TEXT, true))
+        col.addView(tv("Priority", 16f, Glass.text(this@MainActivity), true))
         val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
         flags.forEach { (n, color) ->
             val row = tv("⚑  Priority $n" + if (qaPriority == n) "  ✓" else "", 15.5f, color)
@@ -1224,7 +1268,7 @@ class MainActivity : Activity() {
 
     private fun buildQaProjects(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("My Projects", 16f, Glass.TEXT, true))
+        col.addView(tv("My Projects", 16f, Glass.text(this@MainActivity), true))
         val inboxRow = tv("▣  Inbox" + if (qaProjectSet && qaProjectId == null) "  ✓" else "", 15f)
         inboxRow.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
         inboxRow.setOnClickListener { qaProjectSet = true; qaProjectId = null; showSheet(buildQuickAdd()) }
@@ -1252,7 +1296,7 @@ class MainActivity : Activity() {
 
     private fun buildQaReminders(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Reminders", 16f, Glass.TEXT, true))
+        col.addView(tv("Reminders", 16f, Glass.text(this@MainActivity), true))
         val parsed = Parser.parse(qaText)
         if (qaDate == null && parsed.dueDate == null) {
             val hint = tv("Add a day and time to the task first — pick a date, then choose a reminder.", 13f, Glass.OVERDUE)
@@ -1277,7 +1321,7 @@ class MainActivity : Activity() {
 
     private fun buildQaDatePicker(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Date", 17f, Glass.TEXT, true))
+        col.addView(tv("Date", 17f, Glass.text(this@MainActivity), true))
         val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
         fun quickRow(icon: String, lbl: String, date: String) {
             val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
@@ -1288,7 +1332,7 @@ class MainActivity : Activity() {
             val tt = tv(lbl + if (qaDate == date) "  ✓" else "", 15f)
             tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             row.addView(tt)
-            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.MUTED))
+            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.muted(this@MainActivity)))
             row.setOnClickListener { qaDate = date; Sfx.tick(); showSheet(buildQaDatePicker()) }
             col.addView(row)
         }
@@ -1306,17 +1350,17 @@ class MainActivity : Activity() {
         val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
         head.layoutParams = lp(t = dp(10f), b = dp(4f))
-        val prev = tv("‹", 22f, Glass.TEXT, true); prev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        val prev = tv("‹", 22f, Glass.text(this@MainActivity), true); prev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
         prev.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, -1); showSheet(buildQaDatePicker()) }
-        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 14.5f, Glass.TEXT, true)
+        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 14.5f, Glass.text(this@MainActivity), true)
         mt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); mt.gravity = Gravity.CENTER
-        val next = tv("›", 22f, Glass.TEXT, true); next.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        val next = tv("›", 22f, Glass.text(this@MainActivity), true); next.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
         next.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, 1); showSheet(buildQaDatePicker()) }
         head.addView(prev); head.addView(mt); head.addView(next)
         col.addView(head)
         val dowRow = LinearLayout(this); dowRow.orientation = LinearLayout.HORIZONTAL
         listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
-            val t = tv(d, 11f, Glass.MUTED, true); t.gravity = Gravity.CENTER
+            val t = tv(d, 11f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
             t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             dowRow.addView(t)
         }
@@ -1367,7 +1411,7 @@ class MainActivity : Activity() {
 
     private fun buildQaTimePicker(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Time", 16f, Glass.TEXT, true))
+        col.addView(tv("Time", 16f, Glass.text(this@MainActivity), true))
         val inp = input("HH:mm — e.g. 18:30", qaTime ?: "")
         col.addView(inp)
         val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
@@ -1396,7 +1440,7 @@ class MainActivity : Activity() {
 
     private fun buildQaRepeat(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Repeat", 16f, Glass.TEXT, true))
+        col.addView(tv("Repeat", 16f, Glass.text(this@MainActivity), true))
         val opts = listOf<Pair<String, String?>>(
             "No repeat" to null, "Every day" to "daily", "Every week" to "weekly", "Every month" to "monthly",
             "Every Sunday" to "weekly:0", "Every Monday" to "weekly:1", "Every Tuesday" to "weekly:2",
@@ -1476,7 +1520,7 @@ class MainActivity : Activity() {
 
     private fun buildEditor(t: TaskItem): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Edit task", 17f, Glass.TEXT, true))
+        col.addView(tv("Edit task", 17f, Glass.text(this@MainActivity), true))
         col.addView(label("Title"))
         val edTitle = input("", t.title); col.addView(edTitle)
         col.addView(label("Notes"))
@@ -1532,7 +1576,7 @@ class MainActivity : Activity() {
 
         col.addView(label("Location reminder"))
         if (t.locLat != null) {
-            col.addView(tv("📍 Set — you'll be reminded when you arrive at the saved place.", 13f, Glass.MUTED))
+            col.addView(tv("📍 Set — you'll be reminded when you arrive at the saved place.", 13f, Glass.muted(this@MainActivity)))
             val clear = ghostBtn("Clear location reminder") {
                 stash()
                 t.locLat = null; t.locLng = null
@@ -1544,7 +1588,7 @@ class MainActivity : Activity() {
         } else {
             val setBtn = ghostBtn("📍 Remind me at this place") { stash(); captureLocation(t) }
             col.addView(setBtn)
-            col.addView(tv("Stand at the place (home, office, gym), tap the button — the app remembers it and reminds you when you arrive.", 12.5f, Glass.MUTED))
+            col.addView(tv("Stand at the place (home, office, gym), tap the button — the app remembers it and reminds you when you arrive.", 12.5f, Glass.muted(this@MainActivity)))
         }
 
         col.addView(dayGroup("SUBTASKS"))
@@ -1561,11 +1605,11 @@ class MainActivity : Activity() {
             box.layoutParams = LinearLayout.LayoutParams(dp(21f), dp(21f))
             box.setOnClickListener { stash(); st.done = !st.done; Sfx.tick(); Store.save(); showSheet(buildEditor(t)) }
             row.addView(box)
-            val stT = tv(st.title, 14.5f, if (st.done) Glass.MUTED else Glass.TEXT)
+            val stT = tv(st.title, 14.5f, if (st.done) Glass.muted(this@MainActivity) else Glass.text(this@MainActivity))
             if (st.done) stT.paintFlags = stT.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             stT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(9f) }
             row.addView(stT)
-            val del = tv("✕", 14f, Glass.MUTED)
+            val del = tv("✕", 14f, Glass.muted(this@MainActivity))
             del.setOnClickListener { stash(); t.subtasks.removeAll { it.id == st.id }; Store.save(); showSheet(buildEditor(t)) }
             row.addView(del)
             col.addView(row)
@@ -1707,11 +1751,11 @@ class MainActivity : Activity() {
         val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
         val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
-        val prev = tv("‹", 26f, Glass.TEXT, true); prev.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
+        val prev = tv("‹", 26f, Glass.text(this@MainActivity), true); prev.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
         prev.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, -1); render() }
-        val title = tv("${monthNames[month]} $year", 17f, Glass.TEXT, true)
+        val title = tv("${monthNames[month]} $year", 17f, Glass.text(this@MainActivity), true)
         title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); title.gravity = Gravity.CENTER
-        val next = tv("›", 26f, Glass.TEXT, true); next.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
+        val next = tv("›", 26f, Glass.text(this@MainActivity), true); next.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
         next.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, 1); render() }
         head.addView(prev); head.addView(title); head.addView(next)
         content.addView(head)
@@ -1719,7 +1763,7 @@ class MainActivity : Activity() {
         val calCard = card()
         val dow = LinearLayout(this); dow.orientation = LinearLayout.HORIZONTAL
         listOf("S", "M", "T", "W", "T", "F", "S").forEach { d ->
-            val t = tv(d, 11.5f, Glass.MUTED, true); t.gravity = Gravity.CENTER
+            val t = tv(d, 11.5f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
             t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             dow.addView(t)
         }
@@ -1742,7 +1786,7 @@ class MainActivity : Activity() {
                     val n = Store.state.tasks.count { it.dueDate == ds }
                     cell.text = day.toString() + if (n > 0) "\n" + "•".repeat(minOf(n, 3)) else ""
                     cell.textSize = 13.5f
-                    cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.OVERDUE else Glass.TEXT)
+                    cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.OVERDUE else Glass.text(this@MainActivity))
                     when {
                         ds == selDay -> cell.background = Glass.chip(this, true)
                         ds == Dates.today() -> {
@@ -1770,7 +1814,7 @@ class MainActivity : Activity() {
             val add = accentBtn("＋ Add task on this day") { openQuickAdd(sd) }
             content.addView(add)
         } else {
-            content.addView(tv("Tap a day to see its tasks. Dots = scheduled tasks.", 13f, Glass.MUTED))
+            content.addView(tv("Tap a day to see its tasks. Dots = scheduled tasks.", 13f, Glass.muted(this@MainActivity)))
         }
     }
 
@@ -1781,7 +1825,7 @@ class MainActivity : Activity() {
 
     private fun renderFocus() {
         val c = card()
-        c.addView(tv("Focus on", 13f, Glass.MUTED, true))
+        c.addView(tv("Focus on", 13f, Glass.muted(this@MainActivity), true))
         val names = listOf("— pick a task —") + Store.state.tasks.map { it.title }
         val ids = listOf<String?>(null) + Store.state.tasks.map { it.id }
         val sp = spinner(names, ids.indexOf(focusTaskId).coerceAtLeast(0))
@@ -1823,13 +1867,13 @@ class MainActivity : Activity() {
         ring.layoutParams = FrameLayout.LayoutParams(dp(190f), dp(190f)).apply { gravity = Gravity.CENTER }
         focusRing = ring
         ringWrap.addView(ring)
-        val timeT = tv(fmtClock(focusLeft), 40f, Glass.TEXT, true)
+        val timeT = tv(fmtClock(focusLeft), 40f, Glass.text(this@MainActivity), true)
         timeT.gravity = Gravity.CENTER
         timeT.layoutParams = FrameLayout.LayoutParams(-1, -1)
         focusTimeText = timeT
         ringWrap.addView(timeT)
         c.addView(ringWrap)
-        val stateT = tv(if (focusRunning) "Focusing…" else "Ready when you are", 13.5f, Glass.MUTED)
+        val stateT = tv(if (focusRunning) "Focusing…" else "Ready when you are", 13.5f, Glass.muted(this@MainActivity))
         stateT.gravity = Gravity.CENTER
         focusStateText = stateT
         c.addView(stateT)
@@ -1848,7 +1892,7 @@ class MainActivity : Activity() {
         btnRow.addView(main); btnRow.addView(stop)
         c.addView(btnRow)
         content.addView(c)
-        content.addView(tv("Tip: set a task duration in its editor and the timer picks it up automatically. Leaving this screen pauses the timer.", 12.5f, Glass.MUTED))
+        content.addView(tv("Tip: set a task duration in its editor and the timer picks it up automatically. Leaving this screen pauses the timer.", 12.5f, Glass.muted(this@MainActivity)))
     }
 
     private fun startFocus() {
@@ -1896,8 +1940,8 @@ class MainActivity : Activity() {
 
     private fun statCard(big: String, smallTxt: String): LinearLayout {
         val c = card(13)
-        c.addView(tv(big, 21f, Glass.TEXT, true))
-        c.addView(tv(smallTxt, 12f, Glass.MUTED))
+        c.addView(tv(big, 21f, Glass.text(this@MainActivity), true))
+        c.addView(tv(smallTxt, 12f, Glass.muted(this@MainActivity)))
         return c
     }
 
@@ -1919,7 +1963,7 @@ class MainActivity : Activity() {
         content.addView(grid2)
 
         val chart = card()
-        chart.addView(tv("Last 7 days", 14.5f, Glass.TEXT, true))
+        chart.addView(tv("Last 7 days", 14.5f, Glass.text(this@MainActivity), true))
         val counts = (6 downTo 0).map { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
         val max = Math.max(1, counts.maxOrNull() ?: 1)
         val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
@@ -1930,7 +1974,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.gravity = Gravity.CENTER_HORIZONTAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(n.toString(), 11.5f, Glass.MUTED, true))
+            colL.addView(tv(n.toString(), 11.5f, Glass.muted(this@MainActivity), true))
             val bar = View(this)
             val h = dp(8f) + (dp(74f) * n / max)
             bar.layoutParams = LinearLayout.LayoutParams(dp(20f), h).apply { topMargin = dp(4f); bottomMargin = dp(4f) }
@@ -1942,23 +1986,23 @@ class MainActivity : Activity() {
             bar.background = g
             colL.addView(bar)
             val d = Dates.parse(Dates.addDays(Dates.today(), -(6 - i)))
-            colL.addView(tv(dayNames[Dates.jsDayOfWeek(d)], 11f, Glass.MUTED))
+            colL.addView(tv(dayNames[Dates.jsDayOfWeek(d)], 11f, Glass.muted(this@MainActivity)))
             bars.addView(colL)
         }
         chart.addView(bars)
         content.addView(chart)
 
         val per = card()
-        per.addView(tv("Completions by project", 14.5f, Glass.TEXT, true))
+        per.addView(tv("Completions by project", 14.5f, Glass.text(this@MainActivity), true))
         val byProj = Store.state.projects.map { p ->
             p.name to Store.state.completions.count { it.projectId == p.id }
         }.filter { it.second > 0 }.sortedByDescending { it.second }
-        if (byProj.isEmpty()) per.addView(tv("Complete a task and it will show up here.", 13f, Glass.MUTED))
+        if (byProj.isEmpty()) per.addView(tv("Complete a task and it will show up here.", 13f, Glass.muted(this@MainActivity)))
         byProj.forEach { (name, n) ->
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             rowL.layoutParams = lp(t = dp(6f))
             val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.TEXT, true))
+            rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.text(this@MainActivity), true))
             per.addView(rowL)
         }
         content.addView(per)
@@ -2019,7 +2063,7 @@ class MainActivity : Activity() {
                 30 -> "Completions per day"
                 60 -> "Completions per week"
                 else -> "Completions per month"
-            }, 14.5f, Glass.TEXT, true
+            }, 14.5f, Glass.text(this@MainActivity), true
         ))
         val maxB = Math.max(1, buckets.maxOfOrNull { it.second } ?: 1)
         val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
@@ -2029,7 +2073,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.gravity = Gravity.CENTER_HORIZONTAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            if (perfRange <= 30) colL.addView(tv(n.toString(), 10f, Glass.MUTED, true))
+            if (perfRange <= 30) colL.addView(tv(n.toString(), 10f, Glass.muted(this@MainActivity), true))
             val bar = View(this)
             val h = dp(6f) + (dp(64f) * n / maxB)
             bar.layoutParams = LinearLayout.LayoutParams(-1, h).apply {
@@ -2042,7 +2086,7 @@ class MainActivity : Activity() {
             g.cornerRadius = dp(4f).toFloat()
             bar.background = g
             colL.addView(bar)
-            colL.addView(tv(lbl, 9.5f, Glass.MUTED))
+            colL.addView(tv(lbl, 9.5f, Glass.muted(this@MainActivity)))
             bars.addView(colL)
         }
         chart.addView(bars)
@@ -2052,13 +2096,13 @@ class MainActivity : Activity() {
         val projRows = Db.doneByProject(from, today)
         if (projRows.isNotEmpty()) {
             val pc = card()
-            pc.addView(tv("Done by project", 14.5f, Glass.TEXT, true))
+            pc.addView(tv("Done by project", 14.5f, Glass.text(this@MainActivity), true))
             projRows.take(6).forEach { (pid, n) ->
                 val name = Store.state.projects.find { it.id == pid }?.name ?: "Inbox / deleted"
                 val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
                 rowL.layoutParams = lp(t = dp(6f))
                 val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.TEXT, true))
+                rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.text(this@MainActivity), true))
                 pc.addView(rowL)
             }
             content.addView(pc)
@@ -2066,7 +2110,7 @@ class MainActivity : Activity() {
 
         // done list
         content.addView(dayGroup("✅ DONE — ${done.size}"))
-        if (done.isEmpty()) content.addView(tv("Nothing completed in this period yet.", 13f, Glass.MUTED))
+        if (done.isEmpty()) content.addView(tv("Nothing completed in this period yet.", 13f, Glass.muted(this@MainActivity)))
         var lastDate = ""
         done.take(80).forEach { c ->
             if (c.date != lastDate) {
@@ -2076,19 +2120,19 @@ class MainActivity : Activity() {
             val proj = Store.state.projects.find { it.id == c.projectId }
             content.addView(tv("✅  " + c.title + if (proj != null) "   #" + proj.name else "", 14f))
         }
-        if (done.size > 80) content.addView(tv("…and ${done.size - 80} more", 12.5f, Glass.MUTED))
+        if (done.size > 80) content.addView(tv("…and ${done.size - 80} more", 12.5f, Glass.muted(this@MainActivity)))
 
         // missed list
         content.addView(dayGroup("✗ MISSED — ${missed.size}"))
-        if (missed.isEmpty()) content.addView(tv("No missed tasks in this period. Clean record 🎉", 13f, Glass.MUTED))
+        if (missed.isEmpty()) content.addView(tv("No missed tasks in this period. Clean record 🎉", 13f, Glass.muted(this@MainActivity)))
         missed.take(80).forEach { m ->
             val proj = Store.state.projects.find { it.id == m.projectId }
             val whenLbl = if (m.date == Dates.addDays(today, -1)) "Yesterday" else Dates.fmtDay(m.date)
-            content.addView(tv("✗  " + m.title + "   ·  " + whenLbl + if (proj != null) "   #" + proj.name else "", 14f, Glass.MUTED))
+            content.addView(tv("✗  " + m.title + "   ·  " + whenLbl + if (proj != null) "   #" + proj.name else "", 14f, Glass.muted(this@MainActivity)))
         }
-        if (missed.size > 80) content.addView(tv("…and ${missed.size - 80} more", 12.5f, Glass.MUTED))
+        if (missed.size > 80) content.addView(tv("…and ${missed.size - 80} more", 12.5f, Glass.muted(this@MainActivity)))
 
-        content.addView(tv("Stored in your on-device database (SQLite). Missed days are recorded automatically — including every day a recurring task came due and wasn't done. History grows from your real usage.", 12f, Glass.MUTED))
+        content.addView(tv("Stored in your on-device database (SQLite). Missed days are recorded automatically — including every day a recurring task came due and wasn't done. History grows from your real usage.", 12f, Glass.muted(this@MainActivity)))
     }
 
     private fun perfBuckets(range: Int, byDay: Map<String, Int>): List<Pair<String, Int>> {
@@ -2141,19 +2185,19 @@ class MainActivity : Activity() {
         if (busiest != null && busiest.open + busiest.done7 > 0) {
             val c = card()
             c.addView(tv("🏆 Busiest project", 13f, Glass.GOLD, true))
-            val b = tv("#" + busiest.p.name, 17f, Glass.TEXT, true); b.layoutParams = lp(t = dp(3f))
+            val b = tv("#" + busiest.p.name, 17f, Glass.text(this@MainActivity), true); b.layoutParams = lp(t = dp(3f))
             c.addView(b)
-            c.addView(tv("${busiest.open} open · ${busiest.done7} done this week", 13f, Glass.MUTED))
+            c.addView(tv("${busiest.open} open · ${busiest.done7} done this week", 13f, Glass.muted(this@MainActivity)))
             content.addView(c)
         }
         rows.forEach { r ->
             val c = card(13)
             val headL = LinearLayout(this); headL.orientation = LinearLayout.HORIZONTAL
-            val nm = tv("#" + r.p.name, 15f, Glass.TEXT, true); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val nm = tv("#" + r.p.name, 15f, Glass.text(this@MainActivity), true); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             headL.addView(nm)
-            headL.addView(tv("${(r.pct * 100).toInt()}% weekly completion", 12.5f, Glass.MUTED))
+            headL.addView(tv("${(r.pct * 100).toInt()}% weekly completion", 12.5f, Glass.muted(this@MainActivity)))
             c.addView(headL)
-            c.addView(tv("${r.open} open · ${r.done7} done in the last 7 days", 13f, Glass.MUTED))
+            c.addView(tv("${r.open} open · ${r.done7} done in the last 7 days", 13f, Glass.muted(this@MainActivity)))
             c.addView(progressBar(r.pct))
             content.addView(c)
         }
@@ -2179,7 +2223,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             colL.addView(tv(a.text, 14f))
-            colL.addView(tv(fmtWhen(a.at), 12f, Glass.MUTED))
+            colL.addView(tv(fmtWhen(a.at), 12f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             c.addView(rowL)
         }
@@ -2190,7 +2234,7 @@ class MainActivity : Activity() {
 
     private fun renderRamble() {
         val c = card()
-        c.addView(tv("Say it or type it — one task per line. Dates, #projects, @labels and p1 work in every line.", 13.5f, Glass.MUTED))
+        c.addView(tv("Say it or type it — one task per line. Dates, #projects, @labels and p1 work in every line.", 13.5f, Glass.muted(this@MainActivity)))
         val ta = input("e.g.\nCall mom tomorrow @family\nBuy milk #Shopping\nGym at 7am every day p2", "", multi = true)
         ta.minLines = 5
         ta.gravity = Gravity.TOP
@@ -2241,7 +2285,7 @@ class MainActivity : Activity() {
 
     private fun renderAssist() {
         val c = card()
-        c.addView(tv("Paste an email, message or brain-dump — one task per line. GhostBlade extracts clean tasks and keeps dates, projects and priorities.", 13.5f, Glass.MUTED))
+        c.addView(tv("Paste an email, message or brain-dump — one task per line. GhostBlade extracts clean tasks and keeps dates, projects and priorities.", 13.5f, Glass.muted(this@MainActivity)))
         val ta = input("Paste text here…", "", multi = true)
         ta.minLines = 6
         ta.gravity = Gravity.TOP
@@ -2258,7 +2302,7 @@ class MainActivity : Activity() {
         c.addView(ex)
         content.addView(c)
         content.addView(dayGroup("BREAK A TASK DOWN"))
-        content.addView(tv("Big task? Let GhostBlade draft the steps — you can edit them in the task editor.", 13f, Glass.MUTED))
+        content.addView(tv("Big task? Let GhostBlade draft the steps — you can edit them in the task editor.", 13f, Glass.muted(this@MainActivity)))
         Store.state.tasks.take(12).forEach { t ->
             content.addView(menuItem("📝", t.title, null, null) {
                 breakdownFor(t.title).forEach { x -> t.subtasks.add(Subtask(uid(), x, false)) }
@@ -2295,12 +2339,12 @@ class MainActivity : Activity() {
 
     private fun renderBackups() {
         val info = card()
-        info.addView(tv("💾 Automatic daily backups", 15f, Glass.TEXT, true))
-        info.addView(tv("GhostBlade keeps a snapshot of your data on this device every day (up to 10). No account, no internet — this app has no internet permission at all.", 13f, Glass.MUTED))
+        info.addView(tv("💾 Automatic daily backups", 15f, Glass.text(this@MainActivity), true))
+        info.addView(tv("GhostBlade keeps a snapshot of your data on this device every day (up to 10). No account, no internet — this app has no internet permission at all.", 13f, Glass.muted(this@MainActivity)))
         content.addView(info)
         val c = card()
-        c.addView(tv("Sync between devices", 15f, Glass.TEXT, true))
-        c.addView(tv("Export a sync file here, copy it to your other device (USB, Bluetooth, any chat app), then Import it there. Your data moves — nothing touches a server.", 13f, Glass.MUTED))
+        c.addView(tv("Sync between devices", 15f, Glass.text(this@MainActivity), true))
+        c.addView(tv("Export a sync file here, copy it to your other device (USB, Bluetooth, any chat app), then Import it there. Your data moves — nothing touches a server.", 13f, Glass.muted(this@MainActivity)))
         val exp = accentBtn("⬇️ Export sync file") { writeDownload("ghostblade-sync.json", Store.snapshot()) }
         exp.layoutParams = lp(t = dp(10f), b = dp(8f))
         c.addView(exp)
@@ -2326,7 +2370,7 @@ class MainActivity : Activity() {
         }
         content.addView(mk)
         content.addView(dayGroup("SAVED BACKUPS"))
-        if (Store.state.backups.isEmpty()) content.addView(tv("No backups yet.", 13f, Glass.MUTED))
+        if (Store.state.backups.isEmpty()) content.addView(tv("No backups yet.", 13f, Glass.muted(this@MainActivity)))
         Store.state.backups.forEach { b ->
             val rowC = card(12)
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
@@ -2334,7 +2378,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             colL.addView(tv(fmtWhen(b.at), 14.5f))
-            colL.addView(tv(if (b.auto) "Automatic" else "Manual", 12.5f, Glass.MUTED))
+            colL.addView(tv(if (b.auto) "Automatic" else "Manual", 12.5f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             val restore = chipBtn("Restore", false) {
                 AlertDialog.Builder(this)
@@ -2348,7 +2392,7 @@ class MainActivity : Activity() {
                     .show()
             }
             rowL.addView(restore)
-            val delB = tv("✕", 15f, Glass.MUTED)
+            val delB = tv("✕", 15f, Glass.muted(this@MainActivity))
             delB.setPadding(dp(10f), dp(6f), dp(2f), dp(6f))
             delB.setOnClickListener {
                 Store.state.backups.removeAll { it.id == b.id }
@@ -2365,8 +2409,8 @@ class MainActivity : Activity() {
     private fun renderSmartPlan() {
         val items = smartPlanItems()
         val intro = card()
-        intro.addView(tv("🤖 Smart Plan", 15.5f, Glass.TEXT, true))
-        intro.addView(tv("An offline planner: today's tasks in priority order, starting at the next quarter-hour, using each task's duration (25 min default) with 10-minute breaks. No cloud, no AI bill — just a solid plan.", 13f, Glass.MUTED))
+        intro.addView(tv("🤖 Smart Plan", 15.5f, Glass.text(this@MainActivity), true))
+        intro.addView(tv("An offline planner: today's tasks in priority order, starting at the next quarter-hour, using each task's duration (25 min default) with 10-minute breaks. No cloud, no AI bill — just a solid plan.", 13f, Glass.muted(this@MainActivity)))
         content.addView(intro)
         if (items.isEmpty()) {
             content.addView(emptyView("🌤️", "No tasks scheduled for today — nothing to plan."))
@@ -2386,11 +2430,11 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             colL.addView(tv(t.title, 14.5f))
-            colL.addView(tv("P${t.priority} · $dur min", 12f, Glass.MUTED))
+            colL.addView(tv("P${t.priority} · $dur min", 12f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             content.addView(rowL)
         }
-        content.addView(tv("Total focused time: ${totalMin / 60}h ${totalMin % 60}m (plus breaks)", 13f, Glass.MUTED))
+        content.addView(tv("Total focused time: ${totalMin / 60}h ${totalMin % 60}m (plus breaks)", 13f, Glass.muted(this@MainActivity)))
         val apply = accentBtn("Apply this plan") {
             items.forEach { (t, start, _) ->
                 t.dueTime = start
@@ -2441,11 +2485,11 @@ class MainActivity : Activity() {
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply {
                 rightMargin = if (status != "done") dp(7f) else 0
             }
-            val headT = tv(name.uppercase(), 11f, Glass.MUTED, true); headT.gravity = Gravity.CENTER
+            val headT = tv(name.uppercase(), 11f, Glass.muted(this@MainActivity), true); headT.gravity = Gravity.CENTER
             colL.addView(headT)
             val tasks = Store.state.tasks.filter { it.projectId == p.id && it.status == status }
             if (tasks.isEmpty()) {
-                val e = tv("—", 12f, Glass.MUTED); e.gravity = Gravity.CENTER
+                val e = tv("—", 12f, Glass.muted(this@MainActivity)); e.gravity = Gravity.CENTER
                 colL.addView(e)
             }
             tasks.forEach { t ->
@@ -2457,7 +2501,7 @@ class MainActivity : Activity() {
                 val meta = mutableListOf<String>()
                 if (t.priority < 4) meta.add("P" + t.priority)
                 if (t.dueDate != null) meta.add(if (t.dueDate == Dates.today()) "Today" else Dates.fmtDay(t.dueDate!!))
-                if (meta.isNotEmpty()) cardL.addView(tv(meta.joinToString(" · "), 10.5f, Glass.MUTED))
+                if (meta.isNotEmpty()) cardL.addView(tv(meta.joinToString(" · "), 10.5f, Glass.muted(this@MainActivity)))
                 val btns = LinearLayout(this); btns.orientation = LinearLayout.HORIZONTAL
                 btns.layoutParams = lp(t = dp(6f))
                 if (status != "todo") {
@@ -2490,7 +2534,7 @@ class MainActivity : Activity() {
             board.addView(colL)
         }
         content.addView(board)
-        content.addView(tv("Move tasks with ◀ ▶. In the Done column, ✓ completes the task for real.", 12.5f, Glass.MUTED))
+        content.addView(tv("Move tasks with ◀ ▶. In the Done column, ✓ completes the task for real.", 12.5f, Glass.muted(this@MainActivity)))
     }
 
     /* ---------------- location capture ---------------- */

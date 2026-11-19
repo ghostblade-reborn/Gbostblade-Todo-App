@@ -20,6 +20,10 @@ object Prefs {
     fun glass(ctx: Context): String = prefs(ctx).getString("glass", "default") ?: "default"
     fun accent(ctx: Context): String = prefs(ctx).getString("accent", "crimson") ?: "crimson"
     fun wallpaper(ctx: Context): String = prefs(ctx).getString("wallpaper", "aurora") ?: "aurora"
+    /** aurora (colour wallpapers) | black (Apple Music dark) | white (frosted light). */
+    fun theme(ctx: Context): String = prefs(ctx).getString("theme", "aurora") ?: "aurora"
+    /** Apple Music-style red secondary text. */
+    fun redText(ctx: Context): Boolean = prefs(ctx).getBoolean("red_text", false)
     fun set(ctx: Context, key: String, value: String) = prefs(ctx).edit().putString(key, value).apply()
     fun setBool(ctx: Context, key: String, value: Boolean) = prefs(ctx).edit().putBoolean(key, value).apply()
 }
@@ -45,12 +49,41 @@ object Accents {
 object Glass {
     fun dp(ctx: Context, v: Float): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
-    /** Glass panel background: dark contrast underlay + milky sheen + rim.
-     *  The underlay guarantees text contrast over any wallpaper. */
+    fun isWhite(ctx: Context) = Prefs.theme(ctx) == "white"
+    fun isBlack(ctx: Context) = Prefs.theme(ctx) == "black"
+
+    /** Theme-aware primary text colour. */
+    fun text(ctx: Context): Int = if (isWhite(ctx)) 0xFF131318.toInt() else TEXT
+
+    /** Theme-aware secondary text colour; the Red text option turns it into
+     *  the accent colour (Apple Music's red artist/detail lines). */
+    fun muted(ctx: Context): Int = when {
+        Prefs.redText(ctx) -> Accents.base(ctx)
+        isWhite(ctx) -> 0xFF62626D.toInt()
+        else -> MUTED
+    }
+
+    /** Glass panel background: contrast underlay + milky sheen + rim,
+     *  themed for Aurora / Black / White appearances. */
     fun panel(ctx: Context, radiusDp: Float = 22f, strong: Boolean = false): Drawable {
-        val glassAlpha = when (Prefs.glass(ctx)) {
-            "clear" -> 22
-            "tinted" -> 150
+        val r = dp(ctx, radiusDp).toFloat()
+        if (isWhite(ctx)) {
+            val base = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(
+                    Color.argb(if (strong) 244 else 230, 255, 255, 255),
+                    Color.argb(if (strong) 238 else 218, 251, 251, 253),
+                    Color.argb(if (strong) 232 else 208, 245, 245, 249)
+                )
+            )
+            base.cornerRadius = r
+            base.setStroke(dp(ctx, 1f), Color.argb(54, 25, 25, 40))
+            return base
+        }
+        val glassAlpha = when {
+            isBlack(ctx) -> 16
+            Prefs.glass(ctx) == "clear" -> 22
+            Prefs.glass(ctx) == "tinted" -> 150
             else -> 42
         }
         val base = GradientDrawable(
@@ -61,28 +94,47 @@ object Glass {
                 Color.argb(10, 255, 255, 255)
             )
         )
-        base.cornerRadius = dp(ctx, radiusDp).toFloat()
+        base.cornerRadius = r
         base.setStroke(dp(ctx, 1f), Color.argb(if (Prefs.glass(ctx) == "clear") 96 else 76, 255, 255, 255))
         val under = GradientDrawable()
-        under.cornerRadius = dp(ctx, radiusDp).toFloat()
-        under.setColor(Color.argb(if (strong) 150 else 88, 10, 11, 18))
+        under.cornerRadius = r
+        under.setColor(
+            if (isBlack(ctx)) Color.argb(if (strong) 244 else 234, 14, 14, 18)
+            else Color.argb(if (strong) 150 else 88, 10, 11, 18)
+        )
         return LayerDrawable(arrayOf(under, base))
     }
 
-    /** Sheet surface: dark frosted glass — solid enough to read over any
+    /** Sheet surface: frosted glass — solid enough to read over any
      *  wallpaper, translucent enough for the blurred backdrop to glow through. */
     fun sheetPanel(ctx: Context, radiusDp: Float = 30f): Drawable {
+        val r = dp(ctx, radiusDp).toFloat()
+        if (isWhite(ctx)) {
+            val base = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFBFFFFFF.toInt(), 0xF5F0F1F5.toInt())
+            )
+            base.cornerRadius = r
+            base.setStroke(dp(ctx, 1f), Color.argb(58, 25, 25, 40))
+            val sheen = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.argb(110, 255, 255, 255), Color.argb(0, 255, 255, 255))
+            )
+            sheen.cornerRadius = r
+            return LayerDrawable(arrayOf(base, sheen))
+        }
         val base = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0xE8242C3E.toInt(), 0xE8161C2A.toInt())
+            if (isBlack(ctx)) intArrayOf(0xFB1E1E22.toInt(), 0xFB121214.toInt())
+            else intArrayOf(0xE8242C3E.toInt(), 0xE8161C2A.toInt())
         )
-        base.cornerRadius = dp(ctx, radiusDp).toFloat()
+        base.cornerRadius = r
         base.setStroke(dp(ctx, 1f), Color.argb(96, 255, 255, 255))
         val sheen = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.argb(52, 255, 255, 255), Color.argb(0, 255, 255, 255))
         )
-        sheen.cornerRadius = dp(ctx, radiusDp).toFloat()
+        sheen.cornerRadius = r
         return LayerDrawable(arrayOf(base, sheen))
     }
 
@@ -110,6 +162,16 @@ object Glass {
     fun chip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 14f).toFloat()
+        if (isWhite(ctx)) {
+            if (on) {
+                g.setColor(Color.argb(58, 20, 20, 35))
+                g.setStroke(dp(ctx, 1f), Color.argb(115, 20, 20, 35))
+            } else {
+                g.setColor(Color.argb(30, 20, 20, 35))
+                g.setStroke(dp(ctx, 1f), Color.argb(58, 20, 20, 35))
+            }
+            return g
+        }
         if (on) {
             g.setColor(Color.argb(88, 255, 255, 255))
             g.setStroke(dp(ctx, 1f), Color.argb(175, 255, 255, 255))
@@ -125,6 +187,11 @@ object Glass {
     fun sheetChip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 999f).toFloat()
+        if (isWhite(ctx) && !on) {
+            g.setColor(0xFFE8E8ED.toInt())
+            g.setStroke(dp(ctx, 1f), Color.argb(50, 20, 20, 35))
+            return g
+        }
         if (on) {
             val a = Accents.base(ctx)
             g.setColor(Color.argb(115, Color.red(a), Color.green(a), Color.blue(a)))
@@ -143,10 +210,14 @@ object Glass {
             1 -> Accents.base(ctx)
             2 -> 0xFFFF9F0A.toInt()
             3 -> 0xFF0A84FF.toInt()
-            else -> Color.argb(160, 255, 255, 255)
+            else -> if (isWhite(ctx)) Color.argb(185, 40, 40, 55) else Color.argb(160, 255, 255, 255)
         }
         if (filled) g.setColor(0xFF30D158.toInt()) else {
-            g.setColor(if (priority == 1) Accents.soft(ctx) else Color.argb(16, 255, 255, 255))
+            g.setColor(
+                if (priority == 1) Accents.soft(ctx)
+                else if (isWhite(ctx)) Color.argb(20, 20, 20, 35)
+                else Color.argb(16, 255, 255, 255)
+            )
             g.setStroke(dp(ctx, 2f), color)
         }
         return g
@@ -166,6 +237,35 @@ object Glass {
                     return iv
                 }
             }
+        }
+        // Theme backgrounds (a custom photo, handled above, always wins).
+        if (Prefs.theme(ctx) == "black") {
+            val v = View(ctx)
+            v.background = ColorDrawable(0xFF000000.toInt())
+            return v
+        }
+        if (Prefs.theme(ctx) == "white") {
+            val v = View(ctx)
+            val wpx = ctx.resources.displayMetrics.widthPixels.toFloat()
+            val layers = ArrayList<Drawable>()
+            layers.add(GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xFFF9F9FC.toInt(), 0xFFEEEFF4.toInt(), 0xFFF6F1F6.toInt())))
+            val wb = listOf(
+                floatArrayOf(0.10f, 0.08f, 0.85f) to 0x66FF9EBB.toInt(),
+                floatArrayOf(0.95f, 0.34f, 0.90f) to 0x669EC8FF.toInt(),
+                floatArrayOf(0.06f, 0.84f, 0.75f) to 0x66C89EFF.toInt(),
+                floatArrayOf(0.85f, 0.92f, 0.70f) to 0x59FFE9A8.toInt())
+            for ((geo, col) in wb) {
+                val g = GradientDrawable()
+                g.shape = GradientDrawable.RECTANGLE
+                g.gradientType = GradientDrawable.RADIAL_GRADIENT
+                g.setGradientCenter(geo[0], geo[1])
+                g.setGradientRadius(wpx * geo[2])
+                g.colors = intArrayOf(col, Color.TRANSPARENT)
+                layers.add(g)
+            }
+            v.background = LayerDrawable(layers.toTypedArray())
+            return v
         }
         val colors = when (wp) {
             "sunset" -> intArrayOf(0xFF2A1030.toInt(), 0xFF4A1230.toInt(), 0xFF160A18.toInt(), 0xFF06060A.toInt())
