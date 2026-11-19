@@ -10,5 +10,6 @@ public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         AlarmHelper.rescheduleAll(ctx);
+        LocationReceiver.rearmAll(ctx);
     }
 }

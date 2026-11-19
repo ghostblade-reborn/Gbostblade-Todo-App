@@ -36,11 +36,23 @@ public class ReminderReceiver extends BroadcastReceiver {
         }
     }
 
+    public static final String ACTION_SNOOZE = "com.ghostblade.task.SNOOZE";
+
     @Override
     public void onReceive(Context ctx, Intent intent) {
         String id = intent.getStringExtra("id");
         String title = intent.getStringExtra("title");
         if (title == null) title = "Task reminder";
+
+        /* Snooze button on a fired reminder: re-arm for +1 hour, dismiss. */
+        if (ACTION_SNOOZE.equals(intent.getAction())) {
+            if (id != null) {
+                AlarmHelper.schedule(ctx, id, title, System.currentTimeMillis() + 3600000L);
+                NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel(id.hashCode());
+            }
+            return;
+        }
         ensureChannel(ctx);
 
         Intent open = new Intent(ctx, MainActivity.class);
@@ -62,6 +74,18 @@ public class ReminderReceiver extends BroadcastReceiver {
          .setVibrate(new long[]{0, 220, 120, 220})
          .setDefaults(Notification.DEFAULT_LIGHTS)
          .setPriority(Notification.PRIORITY_HIGH);
+
+        /* Snooze 1h action */
+        if (id != null) {
+            Intent sz = new Intent(ctx, ReminderReceiver.class);
+            sz.setAction(ACTION_SNOOZE);
+            sz.putExtra("id", id);
+            sz.putExtra("title", title);
+            int sflags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) sflags |= PendingIntent.FLAG_IMMUTABLE;
+            PendingIntent szPi = PendingIntent.getBroadcast(ctx, id.hashCode() + 7919, sz, sflags);
+            b.addAction(android.R.drawable.ic_menu_recent_history, "Snooze 1h", szPi);
+        }
 
         NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.notify(id == null ? (int) System.currentTimeMillis() : id.hashCode(), b.build());

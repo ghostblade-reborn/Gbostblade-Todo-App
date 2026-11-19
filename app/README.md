@@ -6,10 +6,10 @@ The installable Android edition of GhostBlade Task.
 |---|---|
 | **App name** | GhostBlade Task |
 | **Package** | `com.ghostblade.task` |
-| **Version** | 1.0 (versionCode 1) |
-| **File** | `GhostBladeTask.apk` (34 KB) |
+| **Version** | 1.2 (versionCode 3) |
+| **File** | `GhostBladeTask.apk` (71 KB) |
 | **Requires** | Android 7.0 (API 24) or newer |
-| **SHA-256** | `313e7b6c3aab89ce292c394d5e596fb56c365a8a693b76941a84501d3e592bf6` |
+| **SHA-256** | `87a8f83689bf464ae6f4dfe52a950c49c72dd21984fb0809d1674b23ef2a34cd` |
 
 ## Download
 
@@ -28,10 +28,20 @@ look for **GhostBlade Task v1.0**.
 
 - All core + Pro features from the web version (filters, calendar,
   durations, subtasks, Assist, Ramble, project insights, history, backups)
-- Data stored **on your device** — works fully offline
-- **Real background reminders**: notifications fire at the set time even
-  when the app is closed, and are re-armed automatically after a reboot
-  (AlarmManager + boot receiver — the same pattern Todoist uses)
+- **iOS Liquid Glass UI** — clear/tinted glass styles, 6 accent colors,
+  changeable wallpapers (incl. your own photo), spring animations, and a
+  distinct sound effect for every action
+- Focus timer, board view, smart day planner, morning brief, search,
+  labels, undo delete
+- **Home-screen widget** with today's tasks
+- Data stored **on your device** — works fully offline, no internet
+  permission; sync between devices via a sync file you keep in any cloud
+- **Real background reminders** with a Snooze 1h action: notifications
+  fire at the set time even when the app is closed, and are re-armed
+  automatically after a reboot (AlarmManager + boot receiver — the same
+  pattern Todoist uses)
+- **Location reminders**: "remind me at this place" (framework proximity
+  alerts, no Play Services)
 - Your 4 daily Must tasks are preloaded on first launch
 
 ## Source
