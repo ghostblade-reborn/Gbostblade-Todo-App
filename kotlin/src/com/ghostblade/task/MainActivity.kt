@@ -8,6 +8,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -23,6 +25,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -67,6 +70,8 @@ class MainActivity : Activity() {
     private lateinit var navBar: LinearLayout
     private lateinit var sheetRoot: FrameLayout
     private lateinit var undoBar: LinearLayout
+    private lateinit var mainColumn: LinearLayout
+    private lateinit var fabBtn: TextView
     private val handler = android.os.Handler(Looper.getMainLooper())
     private var undoHide: Runnable? = null
 
@@ -203,6 +208,7 @@ class MainActivity : Activity() {
 
         val column = LinearLayout(this)
         column.orientation = LinearLayout.VERTICAL
+        mainColumn = column
         root.addView(column, FrameLayout.LayoutParams(-1, -1))
 
         // header (glass card)
@@ -257,6 +263,7 @@ class MainActivity : Activity() {
         fp.setMargins(0, 0, dp(18f), dp(92f))
         fab.layoutParams = fp
         fab.setOnClickListener { openQuickAdd(null) }
+        fabBtn = fab
         root.addView(fab)
 
         // undo bar
@@ -827,15 +834,27 @@ class MainActivity : Activity() {
 
     /* ---------------- sheets ---------------- */
 
+    /** Blur everything behind a sheet (Android 12+). Older versions rely on
+     *  the dark scrim + the solid sheet panel instead. */
+    private fun setBackdropBlur(on: Boolean) {
+        if (Build.VERSION.SDK_INT < 31) return
+        try {
+            val fx = if (on) RenderEffect.createBlurEffect(24f, 24f, Shader.TileMode.CLAMP) else null
+            wallpaperHolder.setRenderEffect(fx)
+            mainColumn.setRenderEffect(fx)
+            navBar.setRenderEffect(fx)
+        } catch (e: Exception) { /* visual only */ }
+    }
+
     private fun showSheet(sheetContent: View) {
         sheetRoot.removeAllViews()
         val scrim = View(this)
-        scrim.setBackgroundColor(0x73020208)
+        scrim.setBackgroundColor(0xB3020208.toInt())
         scrim.setOnClickListener { closeSheet() }
         sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         val panel = LinearLayout(this)
         panel.orientation = LinearLayout.VERTICAL
-        panel.background = Glass.panel(this, 30f, strong = true)
+        panel.background = Glass.sheetPanel(this, 30f)
         panel.setPadding(dp(18f), dp(14f), dp(18f), dp(18f))
         val pp = FrameLayout.LayoutParams(-1, -2)
         pp.gravity = Gravity.BOTTOM
@@ -856,6 +875,8 @@ class MainActivity : Activity() {
         panel.addView(scroll)
         sheetRoot.addView(panel)
         sheetRoot.visibility = View.VISIBLE
+        fabBtn.visibility = View.GONE
+        setBackdropBlur(true)
         Sfx.open()
         panel.translationY = dp(60f).toFloat()
         panel.alpha = 0.4f
@@ -867,6 +888,8 @@ class MainActivity : Activity() {
         Sfx.close()
         sheetRoot.visibility = View.GONE
         sheetRoot.removeAllViews()
+        fabBtn.visibility = View.VISIBLE
+        setBackdropBlur(false)
         editingId = null
     }
 
@@ -939,10 +962,22 @@ class MainActivity : Activity() {
 
     private fun buildQuickAdd(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        var notesIn: EditText? = null
         val inp = input("e.g. Fix bike tire this weekend")
         inp.setText(qaText)
         inp.setSelection(inp.text.length)
-        col.addView(inp)
+        // input row: text field + red send button beside it (Todoist layout)
+        val inputRow = LinearLayout(this); inputRow.orientation = LinearLayout.HORIZONTAL
+        inputRow.gravity = Gravity.CENTER_VERTICAL
+        inp.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8f) }
+        inputRow.addView(inp)
+        val send = tv("↑", 20f, 0xFFFFFFFF.toInt(), true)
+        send.gravity = Gravity.CENTER
+        send.background = Glass.accentGradient(this, 999f)
+        send.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
+        send.setOnClickListener { qaSubmit(inp, notesIn) }
+        inputRow.addView(send)
+        col.addView(inputRow)
         val chips = tv("", 12.5f, Glass.MUTED)
         chips.layoutParams = lp(b = dp(4f))
         col.addView(chips)
@@ -952,7 +987,6 @@ class MainActivity : Activity() {
         popupBox.layoutParams = lp(b = dp(8f))
         popupBox.visibility = View.GONE
         col.addView(popupBox)
-        var notesIn: EditText? = null
         if (qaShowNotes) {
             notesIn = input("Description / notes", qaNotes, multi = true)
             col.addView(notesIn)
@@ -976,10 +1010,10 @@ class MainActivity : Activity() {
         inp.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) { qaSubmit(inp, notesIn); true } else false
         }
-        // toolbar: + · Date · Priority · Reminders · Project .... send
+        // toolbar: + · Date · Priority · Reminders · Project (scrolls sideways)
         val bar = LinearLayout(this); bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER_VERTICAL
-        bar.layoutParams = lp(t = dp(6f))
+        bar.layoutParams = LinearLayout.LayoutParams(-2, -2)
         bar.addView(qaPill("＋", false) { showSheet(buildQaPlusMenu()) })
         val dateLbl = when (qaDate) {
             null -> "📅 Date"
@@ -992,15 +1026,11 @@ class MainActivity : Activity() {
         bar.addView(qaPill("⏰ Reminders", qaRemSet) { showSheet(buildQaReminders()) })
         val projName = if (qaProjectSet) qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox" else "Inbox"
         bar.addView(qaPill("▣ $projName", qaProjectSet) { showSheet(buildQaProjects()) })
-        val spacer = View(this); spacer.layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        bar.addView(spacer)
-        val send = tv("↑", 20f, 0xFFFFFFFF.toInt(), true)
-        send.gravity = Gravity.CENTER
-        send.background = Glass.accentGradient(this, 999f)
-        send.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
-        send.setOnClickListener { qaSubmit(inp, notesIn) }
-        bar.addView(send)
-        col.addView(bar)
+        val barScroll = HorizontalScrollView(this)
+        barScroll.isHorizontalScrollBarEnabled = false
+        barScroll.layoutParams = lp(t = dp(6f))
+        barScroll.addView(bar)
+        col.addView(barScroll)
         col.post { inp.requestFocus() }
         return col
     }

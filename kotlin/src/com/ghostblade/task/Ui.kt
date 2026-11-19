@@ -69,6 +69,23 @@ object Glass {
         return base
     }
 
+    /** Sheet surface: near-opaque dark glass so sheet content stays readable
+     *  over any wallpaper (shown over a blurred, darkened backdrop). */
+    fun sheetPanel(ctx: Context, radiusDp: Float = 30f): Drawable {
+        val base = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xFA1D2331.toInt(), 0xFA131824.toInt())
+        )
+        base.cornerRadius = dp(ctx, radiusDp).toFloat()
+        base.setStroke(dp(ctx, 1f), Color.argb(70, 255, 255, 255))
+        val sheen = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(34, 255, 255, 255), Color.argb(0, 255, 255, 255))
+        )
+        sheen.cornerRadius = dp(ctx, radiusDp).toFloat()
+        return LayerDrawable(arrayOf(base, sheen))
+    }
+
     fun accentGradient(ctx: Context, radiusDp: Float): Drawable {
         val g = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
