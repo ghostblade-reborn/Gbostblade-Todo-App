@@ -74,6 +74,7 @@ class MainActivity : Activity() {
     private lateinit var undoBar: LinearLayout
     private lateinit var mainColumn: LinearLayout
     private lateinit var fabBtn: TextView
+    private var undoWasVisible = false
     private val handler = android.os.Handler(Looper.getMainLooper())
     private var undoHide: Runnable? = null
 
@@ -289,6 +290,7 @@ class MainActivity : Activity() {
         sheetRoot.visibility = View.GONE
         root.addView(sheetRoot, FrameLayout.LayoutParams(-1, -1))
 
+        applyWallpaperFrost()
         setContentView(root)
     }
 
@@ -840,22 +842,40 @@ class MainActivity : Activity() {
 
     /* ---------------- sheets ---------------- */
 
-    /** Frost everything behind a sheet (Android 12+): a double-pass blur for
-     *  depth + a saturation lift — the iOS frosted-glass recipe. Older
-     *  versions rely on the dark scrim + the solid sheet panel instead. */
+    /** One blur+saturation frost effect (Android 12+ RenderEffect). */
+    private fun frostEffect(radius: Float, saturation: Float): RenderEffect {
+        val cm = ColorMatrix().apply { setSaturation(saturation) }
+        val sat = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm))
+        val blur = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        return RenderEffect.createChainEffect(blur, sat)
+    }
+
+    /** Permanent gentle frost on the wallpaper layer, always on: every glass
+     *  panel in the app sits over it, so the whole UI reads as frosted glass. */
+    private fun applyWallpaperFrost() {
+        if (Build.VERSION.SDK_INT < 31) return
+        try { wallpaperHolder.setRenderEffect(frostEffect(18f, 1.22f)) } catch (e: Exception) { /* visual only */ }
+    }
+
+    /** Heavy frost over everything behind a sheet: a double-pass blur for
+     *  depth + a saturation lift — the iOS recipe. Closing the sheet restores
+     *  the permanent wallpaper frost. */
     private fun setBackdropBlur(on: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
         try {
-            val fx = if (on) {
-                val cm = ColorMatrix().apply { setSaturation(1.45f) }
-                val sat = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm))
+            if (on) {
+                val sat = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.45f) }))
                 val b1 = RenderEffect.createBlurEffect(30f, 30f, Shader.TileMode.CLAMP)
                 val b2 = RenderEffect.createBlurEffect(30f, 30f, Shader.TileMode.CLAMP)
-                RenderEffect.createChainEffect(b2, RenderEffect.createChainEffect(b1, sat))
-            } else null
-            wallpaperHolder.setRenderEffect(fx)
-            mainColumn.setRenderEffect(fx)
-            navBar.setRenderEffect(fx)
+                val fx = RenderEffect.createChainEffect(b2, RenderEffect.createChainEffect(b1, sat))
+                wallpaperHolder.setRenderEffect(fx)
+                mainColumn.setRenderEffect(fx)
+                navBar.setRenderEffect(fx)
+            } else {
+                mainColumn.setRenderEffect(null)
+                navBar.setRenderEffect(null)
+                applyWallpaperFrost()
+            }
         } catch (e: Exception) { /* visual only */ }
     }
 
@@ -890,6 +910,9 @@ class MainActivity : Activity() {
         sheetRoot.addView(panel)
         sheetRoot.visibility = View.VISIBLE
         fabBtn.visibility = View.GONE
+        navBar.visibility = View.GONE
+        undoWasVisible = undoBar.visibility == View.VISIBLE
+        if (undoWasVisible) undoBar.visibility = View.GONE
         setBackdropBlur(true)
         Sfx.open()
         panel.translationY = dp(60f).toFloat()
@@ -903,6 +926,8 @@ class MainActivity : Activity() {
         sheetRoot.visibility = View.GONE
         sheetRoot.removeAllViews()
         fabBtn.visibility = View.VISIBLE
+        navBar.visibility = View.VISIBLE
+        if (undoWasVisible) { undoBar.visibility = View.VISIBLE; undoWasVisible = false }
         setBackdropBlur(false)
         editingId = null
     }
@@ -966,8 +991,8 @@ class MainActivity : Activity() {
     }
 
     private fun qaPill(label: String, on: Boolean, click: () -> Unit): TextView {
-        val b = tv(label, 13f, if (on) Glass.TEXT else Glass.MUTED, on)
-        b.background = Glass.chip(this, on)
+        val b = tv(label, 13f, Glass.TEXT, on)
+        b.background = Glass.sheetChip(this, on)
         b.setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
         b.setOnClickListener { click() }
         b.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(7f) }

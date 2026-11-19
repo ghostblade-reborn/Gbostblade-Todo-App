@@ -45,30 +45,28 @@ object Accents {
 object Glass {
     fun dp(ctx: Context, v: Float): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
-    /** Glass panel background: sheen gradient + rim stroke. */
+    /** Glass panel background: dark contrast underlay + milky sheen + rim.
+     *  The underlay guarantees text contrast over any wallpaper. */
     fun panel(ctx: Context, radiusDp: Float = 22f, strong: Boolean = false): Drawable {
         val glassAlpha = when (Prefs.glass(ctx)) {
-            "clear" -> 14
+            "clear" -> 22
             "tinted" -> 150
-            else -> 30
+            else -> 42
         }
         val base = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
             intArrayOf(
-                Color.argb(if (strong) glassAlpha + 90 else glassAlpha + 26, 255, 255, 255),
-                Color.argb(if (strong) glassAlpha + 70 else glassAlpha, 255, 255, 255),
-                Color.argb(6, 255, 255, 255)
+                Color.argb(if (strong) glassAlpha + 90 else glassAlpha + 30, 255, 255, 255),
+                Color.argb(if (strong) glassAlpha + 70 else glassAlpha + 8, 255, 255, 255),
+                Color.argb(10, 255, 255, 255)
             )
         )
         base.cornerRadius = dp(ctx, radiusDp).toFloat()
-        base.setStroke(dp(ctx, 1f), Color.argb(if (Prefs.glass(ctx) == "clear") 84 else 52, 255, 255, 255))
-        if (strong) {
-            val under = GradientDrawable()
-            under.cornerRadius = dp(ctx, radiusDp).toFloat()
-            under.setColor(Color.argb(120, 22, 22, 32))
-            return LayerDrawable(arrayOf(under, base))
-        }
-        return base
+        base.setStroke(dp(ctx, 1f), Color.argb(if (Prefs.glass(ctx) == "clear") 96 else 76, 255, 255, 255))
+        val under = GradientDrawable()
+        under.cornerRadius = dp(ctx, radiusDp).toFloat()
+        under.setColor(Color.argb(if (strong) 150 else 88, 10, 11, 18))
+        return LayerDrawable(arrayOf(under, base))
     }
 
     /** Sheet surface: dark frosted glass — solid enough to read over any
@@ -113,11 +111,27 @@ object Glass {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 14f).toFloat()
         if (on) {
-            g.setColor(Color.argb(64, 255, 255, 255))
-            g.setStroke(dp(ctx, 1f), Color.argb(140, 255, 255, 255))
+            g.setColor(Color.argb(88, 255, 255, 255))
+            g.setStroke(dp(ctx, 1f), Color.argb(175, 255, 255, 255))
         } else {
-            g.setColor(Color.argb(26, 255, 255, 255))
-            g.setStroke(dp(ctx, 1f), Color.argb(30, 255, 255, 255))
+            g.setColor(Color.argb(50, 255, 255, 255))
+            g.setStroke(dp(ctx, 1f), Color.argb(72, 255, 255, 255))
+        }
+        return g
+    }
+
+    /** High-contrast pill for sheets: solid dark slate (or accent when on),
+     *  so sheet controls never wash out over the frosted backdrop. */
+    fun sheetChip(ctx: Context, on: Boolean): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, 999f).toFloat()
+        if (on) {
+            val a = Accents.base(ctx)
+            g.setColor(Color.argb(115, Color.red(a), Color.green(a), Color.blue(a)))
+            g.setStroke(dp(ctx, 1f), Color.argb(210, Color.red(a), Color.green(a), Color.blue(a)))
+        } else {
+            g.setColor(Color.argb(190, 38, 44, 60))
+            g.setStroke(dp(ctx, 1f), Color.argb(100, 255, 255, 255))
         }
         return g
     }
@@ -161,9 +175,49 @@ object Glass {
             "mono" -> intArrayOf(0xFF17171F.toInt(), 0xFF101016.toInt(), 0xFF0C0C10.toInt(), 0xFF06060A.toInt())
             else -> intArrayOf(0xFF1B1B3A.toInt(), 0xFF0E2A4A.toInt(), 0xFF2A0E2E.toInt(), 0xFF06060A.toInt())
         }
+        // Soft aurora colour blobs over the base gradient — with the
+        // wallpaper layer's permanent frost blur, every glass panel above
+        // them reads as real frosted glass. (cx, cy, radiusFactor, argb)
+        val blobs: List<Pair<FloatArray, Int>> = when (wp) {
+            "sunset" -> listOf(
+                floatArrayOf(0.12f, 0.10f, 0.78f) to 0x99FF7A3C.toInt(),
+                floatArrayOf(0.92f, 0.36f, 0.85f) to 0x99FF2E63.toInt(),
+                floatArrayOf(0.08f, 0.86f, 0.70f) to 0x8A8A2BE0.toInt())
+            "ocean" -> listOf(
+                floatArrayOf(0.10f, 0.12f, 0.80f) to 0x8A19B8D8.toInt(),
+                floatArrayOf(0.92f, 0.40f, 0.85f) to 0x8A2F6DFF.toInt(),
+                floatArrayOf(0.15f, 0.88f, 0.70f) to 0x7319D8A6.toInt())
+            "forest" -> listOf(
+                floatArrayOf(0.12f, 0.10f, 0.78f) to 0x8A2ED573.toInt(),
+                floatArrayOf(0.90f, 0.38f, 0.85f) to 0x8A0E9E6E.toInt(),
+                floatArrayOf(0.10f, 0.86f, 0.70f) to 0x73B8D819.toInt())
+            "crimson" -> listOf(
+                floatArrayOf(0.12f, 0.10f, 0.78f) to 0x99FF3B4E.toInt(),
+                floatArrayOf(0.92f, 0.38f, 0.85f) to 0x8AFF7A2F.toInt(),
+                floatArrayOf(0.08f, 0.86f, 0.70f) to 0x8AA61E4D.toInt())
+            "mono" -> listOf(
+                floatArrayOf(0.12f, 0.10f, 0.78f) to 0x5C6E7FA6.toInt(),
+                floatArrayOf(0.92f, 0.40f, 0.85f) to 0x52565B78.toInt(),
+                floatArrayOf(0.10f, 0.88f, 0.70f) to 0x47424A63.toInt())
+            else -> listOf(
+                floatArrayOf(0.12f, 0.10f, 0.80f) to 0x997B2FF7.toInt(),
+                floatArrayOf(0.92f, 0.38f, 0.88f) to 0x992F7DFF.toInt(),
+                floatArrayOf(0.08f, 0.86f, 0.72f) to 0x8AFF2E88.toInt())
+        }
         val v = View(ctx)
-        val g = GradientDrawable(GradientDrawable.Orientation.TL_BR, colors)
-        v.background = g
+        val wpx = ctx.resources.displayMetrics.widthPixels.toFloat()
+        val layers = ArrayList<Drawable>()
+        layers.add(GradientDrawable(GradientDrawable.Orientation.TL_BR, colors))
+        for ((geo, col) in blobs) {
+            val g = GradientDrawable()
+            g.shape = GradientDrawable.RECTANGLE
+            g.gradientType = GradientDrawable.RADIAL_GRADIENT
+            g.setGradientCenter(geo[0], geo[1])
+            g.setGradientRadius(wpx * geo[2])
+            g.colors = intArrayOf(col, Color.TRANSPARENT)
+            layers.add(g)
+        }
+        v.background = LayerDrawable(layers.toTypedArray())
         return v
     }
 
