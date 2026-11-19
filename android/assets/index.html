@@ -159,6 +159,64 @@ input[type=checkbox].asst-chk{accent-color:var(--red2)}
 body[data-glass="clear"]{--glass:rgba(255,255,255,.045);--stroke:rgba(255,255,255,.30);--stroke-soft:rgba(255,255,255,.18);--blur:blur(30px) saturate(230%)}
 body[data-glass="tinted"]{--glass:rgba(16,16,24,.52);--stroke:rgba(255,255,255,.12);--stroke-soft:rgba(255,255,255,.07);--blur:blur(18px) saturate(150%)}
 .chip.on{background:rgba(255,255,255,.24);border-color:rgba(255,255,255,.55);font-weight:700}
+
+/* ================= ANIMATION SYSTEM (Apple-style motion) =================
+   Signature easing: cubic-bezier(.32,.72,0,1) — fast start, long soft settle.
+   Springs overshoot slightly for taps. Everything honours reduced-motion. */
+:root{--spring:cubic-bezier(.32,.72,0,1);--spring-bouncy:cubic-bezier(.34,1.45,.44,1)}
+/* --- view transitions: directional slide + fade --- */
+@keyframes vinR{from{opacity:0;transform:translateX(26px)}to{opacity:1;transform:translateX(0)}}
+@keyframes vinL{from{opacity:0;transform:translateX(-26px)}to{opacity:1;transform:translateX(0)}}
+@keyframes vinUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+#view.vin-r{animation:vinR .38s var(--spring) both}
+#view.vin-l{animation:vinL .38s var(--spring) both}
+#view.vin-up{animation:vinUp .34s var(--spring) both}
+/* --- staggered row entrance --- */
+@keyframes rowIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+#view .task,#view .menuitem,#view .card{animation:rowIn .45s var(--spring) both;animation-delay:calc(var(--i,0)*34ms)}
+/* --- tap feedback: soft squash with spring release --- */
+.task,.menuitem,.chip,.btn,nav.bottom button,.cal .day{transition:transform .22s var(--spring-bouncy),background .2s,box-shadow .25s var(--spring),filter .2s}
+.task:active,.menuitem:active{transform:scale(.972)}
+.chip:active,.cal .day:active{transform:scale(.93)}
+.btn:active{transform:scale(.965)}
+nav.bottom button{transition:transform .22s var(--spring-bouncy),background .3s var(--spring),box-shadow .3s var(--spring),color .2s}
+nav.bottom button:active{transform:scale(.90)}
+nav.bottom button.on .ic{display:inline-block;animation:pop .38s var(--spring-bouncy)}
+@keyframes pop{0%{transform:scale(.6)}55%{transform:scale(1.18)}100%{transform:scale(1)}}
+#fab{transition:transform .25s var(--spring-bouncy),filter .2s}
+#fab:active{transform:scale(.87) rotate(45deg)}
+.check{transition:transform .2s var(--spring-bouncy),background .2s}
+.check:active{transform:scale(1.22)}
+/* --- hold / long-press: glass lens deepens + rim brightens --- */
+.pressing{transform:scale(.955)!important;filter:brightness(1.22) saturate(1.15);
+  box-shadow:0 14px 40px rgba(0,0,0,.5), inset 0 1.5px 1px rgba(255,255,255,.55), inset 0 -1px 1px rgba(255,255,255,.14)!important;
+  transition:transform .30s var(--spring),filter .30s,box-shadow .30s var(--spring)!important}
+/* --- sheets: spring up, fade bg, swipe-down dismiss --- */
+@keyframes sheetIn{from{opacity:.4;transform:translateY(56px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes sheetOut{to{opacity:0;transform:translateY(64px) scale(.985)}}
+@keyframes bgIn{from{opacity:0}to{opacity:1}}
+@keyframes bgOut{to{opacity:0}}
+.sheet{animation:sheetIn .44s var(--spring) both}
+.sheet.closing{animation:sheetOut .24s var(--spring) both;pointer-events:none}
+.sheet-bg{animation:bgIn .3s ease both}
+.sheet-bg.closing{animation:bgOut .24s ease both;pointer-events:none}
+.sheet.dragging{animation:none;transition:none}
+/* --- completion: pop, strike, melt away --- */
+@keyframes donePop{0%{transform:scale(1)}40%{transform:scale(1.05)}100%{transform:scale(.97)}}
+.task.completing{animation:donePop .26s var(--spring-bouncy) both, rowOut .3s var(--spring) .1s both}
+@keyframes rowOut{to{opacity:0;transform:translateX(30px);margin-bottom:-6px}}
+.task.completing .check{background:var(--green)!important;border-color:var(--green)!important;transform:scale(1.15)}
+.task.completing .title{color:var(--muted);text-decoration:line-through}
+/* --- toast + misc --- */
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,12px) scale(.94)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+.toast{animation:toastIn .36s var(--spring-bouncy) both}
+.ring .fgc{transition:stroke-dashoffset .7s var(--spring)}
+.prog>i{transition:width .55s var(--spring)}
+@keyframes fabIn{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:scale(1)}}
+#fab{animation:fabIn .5s var(--spring-bouncy) .1s both}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001s!important;transition-duration:.001s!important}
+}
 </style>
 </head>
 <body>
@@ -409,6 +467,7 @@ function subTitle(){
   if(sub&&sub.indexOf('project:')===0){const p=S.projects.find(p=>p.id===sub.slice(8)); return p?('# '+p.name):'Project';}
   return map[sub]||'GhostBlade Task';
 }
+let lastTab='today';
 function render(){
   renderTop();
   const el=$('#view');
@@ -429,6 +488,11 @@ function render(){
   }
   else if(view==='browse')html=renderBrowse();
   el.innerHTML=html;
+  el.querySelectorAll('.task,.menuitem,.card').forEach((n,i)=>n.style.setProperty('--i',Math.min(i,14)));
+  const order=['inbox','today','upcoming','browse']; let cls='vin-up';
+  if(!sub&&view!==lastTab&&order.includes(view)&&order.includes(lastTab)) cls=order.indexOf(view)>order.indexOf(lastTab)?'vin-r':'vin-l';
+  if(!sub&&order.includes(view)) lastTab=view;
+  el.classList.remove('vin-r','vin-l','vin-up'); void el.offsetWidth; el.classList.add(cls);
   renderNav();
 }
 function renderNav(){
@@ -568,8 +632,22 @@ function viewBackups(){
 }
 
 /* ---------- sheets ---------- */
-function openSheet(html){$('#sheetroot').innerHTML='<div class="sheet-bg" data-act="closesheet"></div><div class="sheet">'+html+'</div>';}
-function closeSheet(){$('#sheetroot').innerHTML='';}
+function openSheet(html){
+  $('#sheetroot').innerHTML='<div class="sheet-bg" data-act="closesheet"></div><div class="sheet">'+html+'</div>';
+  /* swipe-down on the grab handle dismisses the sheet, iOS-style */
+  const sh=$('#sheetroot .sheet'); let sy=null,dy=0;
+  sh.addEventListener('pointerdown',e=>{const r=sh.getBoundingClientRect(); if(e.clientY-r.top<30&&sh.scrollTop<=0){sy=e.clientY; dy=0; sh.classList.add('dragging'); try{sh.setPointerCapture(e.pointerId);}catch(_){}}});
+  sh.addEventListener('pointermove',e=>{if(sy===null)return; dy=Math.max(0,e.clientY-sy); sh.style.transform='translateY('+dy+'px)';});
+  const end=()=>{if(sy===null)return; sh.classList.remove('dragging'); sh.style.transform=''; if(dy>90)closeSheet(); sy=null; dy=0;};
+  sh.addEventListener('pointerup',end); sh.addEventListener('pointercancel',end);
+}
+function closeSheet(){
+  const root=$('#sheetroot'); const sh=root.querySelector('.sheet');
+  if(!sh){root.innerHTML=''; return;}
+  const bg=root.querySelector('.sheet-bg');
+  sh.classList.add('closing'); if(bg)bg.classList.add('closing');
+  setTimeout(()=>{if(root.contains(sh))root.innerHTML='';},235);
+}
 function toast(msg){
   $('#toastroot').innerHTML='<div class="toast">'+esc(msg)+'</div>';
   setTimeout(()=>{$('#toastroot').innerHTML='';},2200);
@@ -651,7 +729,10 @@ document.addEventListener('click',e=>{
     case 'back': sub=null; render(); break;
     case 'openproject': sub='project:'+id; render(); break;
     case 'openfilter': sub='filter:'+id; render(); break;
-    case 'complete': completeTask(id); break;
+    case 'complete': { const row=el.closest('.task');
+      if(row&&!row.classList.contains('completing')){row.classList.add('completing'); if(navigator.vibrate)navigator.vibrate(8); setTimeout(()=>completeTask(id),340);}
+      else completeTask(id);
+      break; }
     case 'edit': openEditor(id); break;
     case 'closesheet': closeSheet(); break;
     case 'qa-add': submitQuickAdd(); break;
@@ -723,6 +804,18 @@ window.__gbtBack=function(){
   if($('#sheetroot').innerHTML){closeSheet(); return;}
   if(sub){sub=null; render(); return;}
 };
+/* ---------- long-press: glass lens response + haptic tick ---------- */
+let pressTimer=null;
+document.addEventListener('pointerdown',e=>{
+  const t=e.target.closest('.task,.menuitem,.chip,.btn,nav.bottom button'); if(!t)return;
+  clearTimeout(pressTimer);
+  pressTimer=setTimeout(()=>{t.classList.add('pressing'); if(navigator.vibrate)navigator.vibrate(6);},150);
+},{passive:true});
+['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev,()=>{
+  clearTimeout(pressTimer);
+  document.querySelectorAll('.pressing').forEach(x=>x.classList.remove('pressing'));
+},{passive:true}));
+document.addEventListener('pointermove',()=>clearTimeout(pressTimer),{passive:true});
 /* ---------- boot ---------- */
 document.body.dataset.glass=localStorage.getItem('gbt_glass')||'default';
 load();
