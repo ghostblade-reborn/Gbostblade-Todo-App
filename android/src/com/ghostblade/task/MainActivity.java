@@ -40,7 +40,11 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 42);
         }
 
+        getWindow().setStatusBarColor(0xFF06060A);
+        getWindow().setNavigationBarColor(0xFF06060A);
+
         web = new WebView(this);
+        web.setBackgroundColor(0xFF06060A);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
