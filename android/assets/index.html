@@ -543,8 +543,10 @@ function renderBrowse(){
   pro.forEach(([k,ic,n,d])=>{h+='<button class="menuitem" data-act="opensub" data-v="'+k+'"><span class="ic">'+ic+'</span><span>'+n+'<small>'+d+'</small></span><span class="tag">PRO</span></button>';});
   const gv=localStorage.getItem('gbt_glass')||'default';
   const wp=localStorage.getItem('gbt_wallpaper')||'aurora'; const hasWpImg=!!localStorage.getItem('gbt_wallpaper_img');
+  const sfxOn=localStorage.getItem('gbt_sounds')!=='off';
   h+='<div class="daygroup">APPEARANCE</div><div class="card"><h4>🪟 Glass style</h4><div class="muted" style="margin-bottom:9px">Liquid Glass, your way — like iOS: Fully Clear, Default, or Fully Tinted.</div><div class="chips" style="margin:0">'
     +[['clear','Fully Clear'],['default','Default'],['tinted','Fully Tinted']].map(([v,l])=>'<button class="chip'+(gv===v?' on':'')+'" data-act="glass" data-v="'+v+'">'+l+'</button>').join('')+'</div>'
+    +'<label class="lbl" style="margin-top:13px">Sound effects</label><div class="chips" style="margin:0"><button class="chip'+(sfxOn?' on':'')+'" data-act="sfx" data-v="on">🔊 On</button><button class="chip'+(!sfxOn?' on':'')+'" data-act="sfx" data-v="off">🔇 Off</button></div>'
     +'<label class="lbl" style="margin-top:13px">Background wallpaper</label><div class="wp-row">'
     +[['aurora','Aurora'],['sunset','Sunset'],['ocean','Ocean'],['forest','Forest'],['crimson','Crimson'],['mono','Mono']].map(([v,l])=>'<button class="wp-swatch wp-'+v+(wp===v?' on':'')+'" data-act="wp" data-v="'+v+'" title="'+l+'" aria-label="'+l+'"></button>').join('')
     +(hasWpImg?'<button class="wp-swatch wp-custom'+(wp==='custom'?' on':'')+'" data-act="wp" data-v="custom" title="Your photo" aria-label="Your photo">🖼️</button>':'')
@@ -675,12 +677,14 @@ function openSheet(html){
   sh.addEventListener('pointermove',e=>{if(sy===null)return; dy=Math.max(0,e.clientY-sy); sh.style.transform='translateY('+dy+'px)';});
   const end=()=>{if(sy===null)return; sh.classList.remove('dragging'); sh.style.transform=''; if(dy>90)closeSheet(); sy=null; dy=0;};
   sh.addEventListener('pointerup',end); sh.addEventListener('pointercancel',end);
+  SFX.open();
 }
 function closeSheet(){
   const root=$('#sheetroot'); const sh=root.querySelector('.sheet');
   if(!sh){root.innerHTML=''; return;}
   const bg=root.querySelector('.sheet-bg');
   sh.classList.add('closing'); if(bg)bg.classList.add('closing');
+  SFX.close();
   setTimeout(()=>{if(root.contains(sh))root.innerHTML='';},235);
 }
 function toast(msg){
@@ -703,7 +707,7 @@ function submitQuickAdd(){
   if(!p.title){toast('Add a title too'); return;}
   const base={}; if(inp.dataset.date&&!p.dueDate)base.dueDate=inp.dataset.date;
   addTaskFromParse(p,base);
-  closeSheet(); render(); toast('Task added ✅');
+  SFX.add(); closeSheet(); render(); toast('Task added ✅');
 }
 let editingId=null;
 function openEditor(id){
@@ -737,7 +741,7 @@ function saveEditor(){
   t.projectId=$('#edProj').value||null;
   const d=Number($('#edDur').value); t.durationMin=d>0?d:null;
   const r=$('#edRem').value; t.reminderOffsetMin=(r===''?null:Number(r));
-  syncReminder(t); save(); closeSheet(); render(); toast('Saved ✅');
+  syncReminder(t); save(); SFX.tick(); closeSheet(); render(); toast('Saved ✅');
 }
 /* assist breakdown templates */
 function breakdownFor(title){
@@ -758,29 +762,30 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('[data-act]'); if(!el)return;
   const act=el.dataset.act, id=el.dataset.id;
   switch(act){
-    case 'nav': view=el.dataset.v; sub=null; render(); break;
+    case 'nav': SFX.nav(); view=el.dataset.v; sub=null; render(); break;
     case 'glass': localStorage.setItem('gbt_glass',el.dataset.v); document.body.dataset.glass=el.dataset.v; render(); break;
     case 'wp': localStorage.setItem('gbt_wallpaper',el.dataset.v); applyWallpaper(); render(); break;
     case 'wp-upload': { const f=$('#wpFile'); if(f)f.click(); break; }
     case 'wp-remove': localStorage.removeItem('gbt_wallpaper_img'); if(localStorage.getItem('gbt_wallpaper')==='custom')localStorage.setItem('gbt_wallpaper','aurora'); applyWallpaper(); render(); toast('Photo removed'); break;
-    case 'opensub': sub=el.dataset.v; render(); break;
-    case 'back': sub=null; render(); break;
-    case 'openproject': sub='project:'+id; render(); break;
-    case 'openfilter': sub='filter:'+id; render(); break;
+    case 'sfx': localStorage.setItem('gbt_sounds',el.dataset.v); if(el.dataset.v==='on')setTimeout(()=>SFX.add(),30); render(); break;
+    case 'opensub': SFX.nav(); sub=el.dataset.v; render(); break;
+    case 'back': SFX.nav(); sub=null; render(); break;
+    case 'openproject': SFX.nav(); sub='project:'+id; render(); break;
+    case 'openfilter': SFX.nav(); sub='filter:'+id; render(); break;
     case 'complete': { const row=el.closest('.task');
-      if(row&&!row.classList.contains('completing')){row.classList.add('completing'); if(navigator.vibrate)navigator.vibrate(8); setTimeout(()=>completeTask(id),340);}
-      else completeTask(id);
+      if(row&&!row.classList.contains('completing')){row.classList.add('completing'); SFX.complete(); if(navigator.vibrate)navigator.vibrate(8); setTimeout(()=>completeTask(id),340);}
+      else {SFX.complete(); completeTask(id);}
       break; }
     case 'edit': openEditor(id); break;
     case 'closesheet': closeSheet(); break;
     case 'qa-add': submitQuickAdd(); break;
     case 'ed-save': saveEditor(); break;
-    case 'ed-delete': deleteTask(editingId); closeSheet(); render(); break;
+    case 'ed-delete': SFX.del(); deleteTask(editingId); closeSheet(); render(); break;
     case 'addsub': {
       const t=S.tasks.find(t=>t.id===editingId); const v=$('#subText').value.trim(); if(!t||!v)break;
       t.subtasks.push({id:uid(),title:v,done:false}); save(); openEditor(editingId); break;}
     case 'togglesub': {
-      const t=S.tasks.find(t=>t.id===editingId); const s=t&&t.subtasks.find(s=>s.id===id); if(s){s.done=!s.done; save(); openEditor(editingId);} break;}
+      const t=S.tasks.find(t=>t.id===editingId); const s=t&&t.subtasks.find(s=>s.id===id); if(s){s.done=!s.done; SFX.tick(); save(); openEditor(editingId);} break;}
     case 'delsub': {
       const t=S.tasks.find(t=>t.id===editingId); if(t){t.subtasks=t.subtasks.filter(s=>s.id!==id); save(); openEditor(editingId);} break;}
     case 'breakdown': {
@@ -793,7 +798,7 @@ document.addEventListener('click',e=>{
       const name=prompt('Filter name:'); if(!name)break;
       const q=prompt('Filter query (e.g. "today & p1", "#Work", "@home", "overdue", "no date"):'); if(!q)break;
       S.filters.push({id:uid(),name:name.trim(),query:q.trim()}); save(); render(); break;}
-    case 'delfilter': S.filters=S.filters.filter(f=>f.id!==id); sub=null; save(); render(); break;
+    case 'delfilter': SFX.del(); S.filters=S.filters.filter(f=>f.id!==id); sub=null; save(); render(); break;
     case 'calprev': {const d=parseD(calCursor); d.setMonth(d.getMonth()-1); calCursor=dstr(d); render(); break;}
     case 'calnext': {const d=parseD(calCursor); d.setMonth(d.getMonth()+1); calCursor=dstr(d); render(); break;}
     case 'calday': calSel=el.dataset.d; render(); break;
@@ -810,7 +815,7 @@ document.addEventListener('click',e=>{
       const lines=$('#rambleText').value.split('\n').map(x=>x.trim()).filter(Boolean);
       if(!lines.length){toast('Nothing to add'); break;}
       let n=0; lines.forEach(l=>{const p=parseQuickAdd(l); if(p.title){addTaskFromParse(p); n++;}});
-      save(); $('#rambleText').value=''; render(); toast(n+' tasks added 🎙️'); break;}
+      save(); SFX.add(); $('#rambleText').value=''; render(); toast(n+' tasks added 🎙️'); break;}
     case 'assist-extract': {
       const raw=$('#assistText').value;
       const lines=raw.split('\n').map(x=>x.replace(/^[\s•\-\*\d\.\)]+/,'').trim()).filter(x=>x.length>2);
@@ -820,7 +825,7 @@ document.addEventListener('click',e=>{
       break;}
     case 'assist-add': {
       let n=0; document.querySelectorAll('.asst-chk:checked').forEach(c=>{const p=parseQuickAdd(c.dataset.t); if(p.title){addTaskFromParse(p); n++;}});
-      save(); sub=null; view='today'; render(); toast(n+' tasks added 🤖'); break;}
+      save(); SFX.add(); sub=null; view='today'; render(); toast(n+' tasks added 🤖'); break;}
     case 'backup-now':
       S.backups.unshift({id:uid(),at:Date.now(),auto:false,data:snapshot()}); S.backups=S.backups.slice(0,10); save(); render(); toast('Backup saved 💾'); break;
     case 'restore': {
@@ -842,12 +847,64 @@ window.__gbtBack=function(){
   if($('#sheetroot').innerHTML){closeSheet(); return;}
   if(sub){sub=null; render(); return;}
 };
+/* ---------- sound effects: tiny WebAudio synth, a different voice per action ---------- */
+let AC=null;
+function soundsOn(){return localStorage.getItem('gbt_sounds')!=='off';}
+function ac(){
+  if(!soundsOn())return null;
+  if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){AC=null;}}
+  if(AC&&AC.state==='suspended')AC.resume();
+  return AC;
+}
+function tone(fA,fB,dur,type,vol,delay){
+  const c=ac(); if(!c)return;
+  const t0=c.currentTime+(delay||0);
+  const o=c.createOscillator(), g=c.createGain();
+  o.type=type||'sine';
+  o.frequency.setValueAtTime(Math.max(fA,1),t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(fB,1),t0+dur);
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.exponentialRampToValueAtTime(vol||0.12,t0+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  o.connect(g); g.connect(c.destination);
+  o.start(t0); o.stop(t0+dur+0.05);
+}
+function whoosh(dur,vol,fA,fB){
+  const c=ac(); if(!c)return;
+  const n=Math.max(1,Math.floor(c.sampleRate*dur)), buf=c.createBuffer(1,n,c.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
+  const src=c.createBufferSource(); src.buffer=buf;
+  const f=c.createBiquadFilter(); f.type='bandpass'; f.Q.value=1.1;
+  const t0=c.currentTime;
+  f.frequency.setValueAtTime(fA,t0);
+  f.frequency.exponentialRampToValueAtTime(fB,t0+dur);
+  const g=c.createGain();
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.exponentialRampToValueAtTime(vol,t0+dur*0.35);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  src.connect(f); f.connect(g); g.connect(c.destination);
+  src.start(t0); src.stop(t0+dur+0.05);
+}
+const SFX={
+  tap(){tone(1150,840,0.055,'sine',0.09);},
+  hold(){tone(330,180,0.12,'triangle',0.15);},
+  nav(){tone(760,560,0.06,'sine',0.06);},
+  open(){whoosh(0.17,0.05,480,2500); tone(520,780,0.10,'sine',0.045);},
+  close(){whoosh(0.13,0.04,2300,420);},
+  add(){tone(620,940,0.09,'sine',0.12); tone(1245,1245,0.08,'sine',0.06,0.055);},
+  complete(){tone(659,659,0.10,'sine',0.12); tone(880,880,0.15,'sine',0.12,0.08); tone(1319,1319,0.20,'sine',0.05,0.08);},
+  del(){tone(400,130,0.15,'sawtooth',0.05);},
+  tick(){tone(990,990,0.045,'square',0.045);}
+};
+document.addEventListener('pointerdown',e=>{
+  if(e.target.closest('.menuitem,.chip,.wp-swatch,.cal .day,.task .body,.btn.ghost,.subtask .box'))SFX.tap();
+},{passive:true});
 /* ---------- long-press: glass lens response + haptic tick ---------- */
 let pressTimer=null;
 document.addEventListener('pointerdown',e=>{
   const t=e.target.closest('.task,.menuitem,.chip,.btn,nav.bottom button'); if(!t)return;
   clearTimeout(pressTimer);
-  pressTimer=setTimeout(()=>{t.classList.add('pressing'); if(navigator.vibrate)navigator.vibrate(6);},150);
+  pressTimer=setTimeout(()=>{t.classList.add('pressing'); SFX.hold(); if(navigator.vibrate)navigator.vibrate(6);},150);
 },{passive:true});
 ['pointerup','pointercancel'].forEach(ev=>document.addEventListener(ev,()=>{
   clearTimeout(pressTimer);
