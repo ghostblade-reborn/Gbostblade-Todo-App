@@ -6,10 +6,10 @@ The installable Android edition of GhostBlade Task — now **100% Kotlin**.
 |---|---|
 | **App name** | GhostBlade Task |
 | **Package** | `com.ghostblade.task` |
-| **Version** | 2.1-kotlin (versionCode 5) |
-| **File** | `GhostBladeTask-Kotlin.apk` (726 KB) |
+| **Version** | 3.1-kotlin (versionCode 15) |
+| **File** | `GhostBladeTask-Kotlin-v3.1.apk` (751 KB) |
 | **Requires** | Android 7.0 (API 24) or newer |
-| **SHA-256** | `374beb1cddeae4157db2b7499daf239cf579d2b7febdd894e766efb55a325928` |
+| **SHA-256** | `0c7b0e6d610ffa825ca8aa1858a489b4ec8fb2534dbf48c989ffa6a4bd1659d3` |
 
 ## Download
 
@@ -17,7 +17,7 @@ Get the APK from the [**Releases**](../../releases) section of this repo.
 
 ## Install
 
-1. Download `GhostBladeTask-Kotlin.apk` to your phone.
+1. Download `GhostBladeTask-Kotlin-v3.1.apk` to your phone.
 2. Open the file and tap **Install**. If Android asks, allow
    "Install unknown apps" for your browser/file manager — this is normal
    for apps installed outside the Play Store.
@@ -36,9 +36,18 @@ identical.
   AudioTrack, the focus ring is drawn on Canvas
 - All core + Pro features (300 projects, filters, calendar view, durations,
   subtasks, Assist, Ramble, project insights, full history, auto backups)
-- **iOS Liquid Glass look** — clear/tinted glass styles, 6 accent colors,
-  changeable wallpapers (incl. your own photo), spring animations, and a
-  distinct sound effect for every action
+- **Todoist-style Quick Add** — natural-language parsing ("tomorrow at 7am
+  every day #Health p2"), date/priority/reminder/project pickers, inline
+  `#project` and `!!priority` suggestions
+- **Performance database (SQLite)** — done vs missed history with 7-day,
+  30-day, 2-month and 1-year views, completion rate, streak rate, current
+  and best streaks
+- **iOS Liquid Glass look** — real backdrop frost blur (double-pass +
+  saturation), soft rounded shadows, clear/tinted glass styles, 6 accent
+  colors, changeable wallpapers (incl. your own photo), spring animations,
+  iOS-style minimal sound effects
+- **Three themes** — Aurora (colour wallpapers), Midnight Black and Frost
+  White (Apple Music-style), plus a Red text option for detail lines
 - Focus timer, board view, offline Smart Plan day planner, morning brief,
   search, labels, undo delete
 - **Home-screen widget** with today's tasks
@@ -54,7 +63,8 @@ identical.
 
 ## Source
 
-The Kotlin source lives in [`kotlin/`](../kotlin) — 15 `.kt` files plus
+The Kotlin source lives in [`kotlin/`](../kotlin) — 16 `.kt` files, the
+`res/` XML resources, a runnable logic test suite (`kotlin/tests/`), plus
 `build.sh` (aapt2 → javac R → kotlinc → d8 pipeline, no Gradle required).
 The previous JavaScript edition remains under [`android/`](../android)
 for history.
