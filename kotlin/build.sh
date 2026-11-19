@@ -38,10 +38,15 @@ echo "== d8: dex (app + kotlin-stdlib) =="
 echo "== package + align + sign =="
 (cd "$B/dex" && zip -q ../unsigned.apk classes.dex)
 "$BT/zipalign" -f 4 "$B/unsigned.apk" "$B/aligned.apk"
+# Versioned output name (GhostBladeTask-Kotlin-v2.7.apk) so downloads never
+# collide into "(1)", "(2)" duplicates on the phone.
+VER=$(grep -o 'android:versionName="[^"]*"' AndroidManifest.xml | head -1 | cut -d'"' -f2)
+OUT="GhostBladeTask-Kotlin-v${VER%-kotlin}.apk"
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
-  --out GhostBladeTask-Kotlin.apk "$B/aligned.apk"
+  --out "$OUT" "$B/aligned.apk"
+cp "$OUT" GhostBladeTask-Kotlin.apk
 
-"$BT/apksigner" verify GhostBladeTask-Kotlin.apk
-"$BT/aapt2" dump badging GhostBladeTask-Kotlin.apk | head -8
-ls -la GhostBladeTask-Kotlin.apk
-sha256sum GhostBladeTask-Kotlin.apk
+"$BT/apksigner" verify "$OUT"
+"$BT/aapt2" dump badging "$OUT" | head -8
+ls -la "$OUT"
+sha256sum "$OUT"
