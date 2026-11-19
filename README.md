@@ -2,6 +2,10 @@
 
 A Todoist-style task manager — dark theme, red accent — built with a modular architecture so new features can be added day by day without rewrites.
 
+## 📱 Android app
+
+GhostBlade Task is also an installable Android app (`GhostBladeTask.apk`, Android 7+) with real background reminders that fire even when the app is closed. Download it from the [**Releases**](../../releases) section — details, install steps and checksum are in [`app/`](app/). Android source: [`android/`](android/).
+
 ## Features
 
 - Inbox / Today / Upcoming / Browse views
