@@ -27,10 +27,12 @@ object Dates {
     fun jsDayOfWeek(c: Calendar): Int = c.get(Calendar.DAY_OF_WEEK) - 1
 
     fun fmtDay(s: String): String {
-        val days = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
-        val mon = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-        val c = parse(s)
-        return days[jsDayOfWeek(c)] + " " + c.get(Calendar.DAY_OF_MONTH) + " " + mon[c.get(Calendar.MONTH)]
+        return try {
+            val days = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+            val mon = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+            val c = parse(s)
+            days[jsDayOfWeek(c)] + " " + c.get(Calendar.DAY_OF_MONTH) + " " + mon[c.get(Calendar.MONTH)]
+        } catch (e: Exception) { s }
     }
 
     fun isOverdue(t: TaskItem): Boolean = t.dueDate != null && t.dueDate!! < today()

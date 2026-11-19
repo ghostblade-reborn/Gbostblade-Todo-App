@@ -924,7 +924,7 @@ class MainActivity : Activity() {
         if (qaTime != null) p.dueTime = qaTime
         if (qaRecSet) p.recurrence = qaRecurrence
         if (qaPriority != null) p.priority = qaPriority!!
-        if (qaProjectSet) p.projectName = qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox"
+        if (qaProjectSet && qaProjectId != null) p.projectName = Store.state.projects.find { it.id == qaProjectId }?.name
         return p
     }
 
@@ -1447,17 +1447,33 @@ class MainActivity : Activity() {
         col.addView(label("Reminder (fires even if app is closed)"))
         val edRem = spinner(remLabels, remValues.indexOf(t.reminderOffsetMin).coerceAtLeast(0)); col.addView(edRem)
 
+        // Copy in-progress field edits into the task before any action that
+        // rebuilds this sheet (subtasks, location), so typed text isn't lost.
+        fun stash() {
+            t.title = edTitle.text.toString().trim().ifEmpty { t.title }
+            t.notes = edNotes.text.toString()
+            t.dueDate = edDate.text.toString().trim().ifEmpty { null }
+            t.dueTime = edTime.text.toString().trim().ifEmpty { null }
+            t.recurrence = recValues[edRec.selectedItemPosition]
+            t.priority = edPri.selectedItemPosition + 1
+            t.projectId = projIds[edProj.selectedItemPosition]
+            t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
+            t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
+        }
+
         col.addView(label("Location reminder"))
         if (t.locLat != null) {
             col.addView(tv("📍 Set — you'll be reminded when you arrive at the saved place.", 13f, Glass.MUTED))
             val clear = ghostBtn("Clear location reminder") {
+                stash()
                 t.locLat = null; t.locLng = null
                 LocationReceiver.disarm(this, t.id)
+                Reminders.sync(this, t)
                 Store.save(); showSheet(buildEditor(t)); toast("Location reminder cleared")
             }
             col.addView(clear)
         } else {
-            val setBtn = ghostBtn("📍 Remind me at this place") { captureLocation(t) }
+            val setBtn = ghostBtn("📍 Remind me at this place") { stash(); captureLocation(t) }
             col.addView(setBtn)
             col.addView(tv("Stand at the place (home, office, gym), tap the button — the app remembers it and reminds you when you arrive.", 12.5f, Glass.MUTED))
         }
@@ -1474,14 +1490,14 @@ class MainActivity : Activity() {
             if (st.done) bg.setColor(Glass.GREEN) else bg.setStroke(dp(2f), 0x66FFFFFF)
             box.background = bg
             box.layoutParams = LinearLayout.LayoutParams(dp(21f), dp(21f))
-            box.setOnClickListener { st.done = !st.done; Sfx.tick(); Store.save(); showSheet(buildEditor(t)) }
+            box.setOnClickListener { stash(); st.done = !st.done; Sfx.tick(); Store.save(); showSheet(buildEditor(t)) }
             row.addView(box)
             val stT = tv(st.title, 14.5f, if (st.done) Glass.MUTED else Glass.TEXT)
             if (st.done) stT.paintFlags = stT.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             stT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(9f) }
             row.addView(stT)
             val del = tv("✕", 14f, Glass.MUTED)
-            del.setOnClickListener { t.subtasks.removeAll { it.id == st.id }; Store.save(); showSheet(buildEditor(t)) }
+            del.setOnClickListener { stash(); t.subtasks.removeAll { it.id == st.id }; Store.save(); showSheet(buildEditor(t)) }
             row.addView(del)
             col.addView(row)
         }
@@ -1489,11 +1505,12 @@ class MainActivity : Activity() {
         val subIn = input("Add a subtask"); subIn.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         val subAdd = ghostBtn("Add") {
             val v = subIn.text.toString().trim()
-            if (v.isNotEmpty()) { t.subtasks.add(Subtask(uid(), v, false)); Store.save(); showSheet(buildEditor(t)) }
+            if (v.isNotEmpty()) { stash(); t.subtasks.add(Subtask(uid(), v, false)); Store.save(); showSheet(buildEditor(t)) }
         }
         subRow.addView(subIn); subRow.addView(subAdd)
         col.addView(subRow)
         val breakdown = ghostBtn("🤖 Break it down (auto subtasks)") {
+            stash()
             breakdownFor(t.title).forEach { x -> t.subtasks.add(Subtask(uid(), x, false)) }
             Store.save(); showSheet(buildEditor(t)); toast("Subtasks added 🤖")
         }
@@ -1501,10 +1518,20 @@ class MainActivity : Activity() {
         col.addView(breakdown)
 
         val save = accentBtn("Save") {
+            val dateTxt = edDate.text.toString().trim()
+            if (dateTxt.isNotEmpty() && !isValidDateStr(dateTxt)) {
+                toast("Date must be a real date like 2026-11-20")
+                return@accentBtn
+            }
+            val timeTxt = edTime.text.toString().trim()
+            if (timeTxt.isNotEmpty() && !Regex("""^([01]\d|2[0-3]):[0-5]\d$""").matches(timeTxt)) {
+                toast("Time must be HH:mm like 18:30")
+                return@accentBtn
+            }
             t.title = edTitle.text.toString().trim().ifEmpty { t.title }
             t.notes = edNotes.text.toString()
-            t.dueDate = edDate.text.toString().trim().ifEmpty { null }
-            t.dueTime = edTime.text.toString().trim().ifEmpty { null }
+            t.dueDate = dateTxt.ifEmpty { null }
+            t.dueTime = timeTxt.ifEmpty { null }
             t.recurrence = recValues[edRec.selectedItemPosition]
             t.priority = edPri.selectedItemPosition + 1
             t.projectId = projIds[edProj.selectedItemPosition]
@@ -1570,6 +1597,15 @@ class MainActivity : Activity() {
     }
 
     /* ---------------- Phase 3 screens ---------------- */
+
+    /** Strict yyyy-MM-dd check: right shape AND a real calendar date. */
+    private fun isValidDateStr(s: String): Boolean {
+        if (!Regex("""^\d{4}-\d{2}-\d{2}$""").matches(s)) return false
+        return try {
+            val c = Dates.parse(s)
+            Dates.dstr(c) == s
+        } catch (e: Exception) { false }
+    }
 
     private fun fmtWhen(at: Long): String {
         val d = Dates.dstr(java.util.Calendar.getInstance().apply { timeInMillis = at })
@@ -1682,12 +1718,17 @@ class MainActivity : Activity() {
         val sp = spinner(names, ids.indexOf(focusTaskId).coerceAtLeast(0))
         sp.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                focusTaskId = ids[pos]
-                val t = focusTaskId?.let { Store.byId(it) }
-                if (t?.durationMin != null) {
+                // Fires on first layout too — only react to real changes, and
+                // never render() from here (that rebuilds the spinner -> loop).
+                val newId = ids[pos]
+                if (newId == focusTaskId) return
+                focusTaskId = newId
+                val t = newId?.let { Store.byId(it) }
+                if (t?.durationMin != null && !focusRunning) {
                     focusTotal = t.durationMin!! * 60
-                    if (!focusRunning) focusLeft = focusTotal
-                    render()
+                    focusLeft = focusTotal
+                    focusTimeText?.text = fmtClock(focusLeft)
+                    focusRing?.fraction = 1f
                 }
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
