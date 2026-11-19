@@ -165,7 +165,7 @@ object Store {
         t.durationMin = p.durationMin ?: t.durationMin
         if (p.projectName != null) t.projectId = projByName(p.projectName!!).id
         p.labelNames.forEach { n -> t.labelIds.add(labelByName(n).id) }
-        if (base == null) state.tasks.add(t)
+        if (state.tasks.none { it.id == t.id }) state.tasks.add(t)
         logActivity("create", "Added \"" + t.title + "\"")
         Reminders.sync(appCtx, t)
         save()
