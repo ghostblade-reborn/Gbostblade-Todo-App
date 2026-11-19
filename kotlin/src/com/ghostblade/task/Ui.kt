@@ -3,11 +3,13 @@ package com.ghostblade.task
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.ColorDrawable
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.ImageView
 import java.io.File
 
@@ -69,21 +71,32 @@ object Glass {
         return base
     }
 
-    /** Sheet surface: near-opaque dark glass so sheet content stays readable
-     *  over any wallpaper (shown over a blurred, darkened backdrop). */
+    /** Sheet surface: dark frosted glass — solid enough to read over any
+     *  wallpaper, translucent enough for the blurred backdrop to glow through. */
     fun sheetPanel(ctx: Context, radiusDp: Float = 30f): Drawable {
         val base = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0xFA1D2331.toInt(), 0xFA131824.toInt())
+            intArrayOf(0xE8242C3E.toInt(), 0xE8161C2A.toInt())
         )
         base.cornerRadius = dp(ctx, radiusDp).toFloat()
-        base.setStroke(dp(ctx, 1f), Color.argb(70, 255, 255, 255))
+        base.setStroke(dp(ctx, 1f), Color.argb(96, 255, 255, 255))
         val sheen = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.argb(34, 255, 255, 255), Color.argb(0, 255, 255, 255))
+            intArrayOf(Color.argb(52, 255, 255, 255), Color.argb(0, 255, 255, 255))
         )
         sheen.cornerRadius = dp(ctx, radiusDp).toFloat()
         return LayerDrawable(arrayOf(base, sheen))
+    }
+
+    /** Soft rounded drop shadow — the depth cue that makes glass feel premium. */
+    fun elevate(ctx: Context, v: View, radiusDp: Float, elevDp: Float) {
+        v.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                if (view.width > 0 && view.height > 0)
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(ctx, radiusDp).toFloat())
+            }
+        }
+        v.elevation = dp(ctx, elevDp).toFloat()
     }
 
     fun accentGradient(ctx: Context, radiusDp: Float): Drawable {

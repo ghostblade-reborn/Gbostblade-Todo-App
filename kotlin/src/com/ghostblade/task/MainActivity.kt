@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -107,6 +109,7 @@ class MainActivity : Activity() {
         l.background = Glass.panel(this, 24f)
         l.setPadding(dp(padDp.toFloat()), dp(padDp.toFloat()), dp(padDp.toFloat()), dp(padDp.toFloat()))
         l.layoutParams = lp(b = dp(10f))
+        Glass.elevate(this, l, 24f, 4f)
         return l
     }
 
@@ -219,6 +222,7 @@ class MainActivity : Activity() {
         val hp = FrameLayout.LayoutParams(-1, -2)
         hp.setMargins(dp(12f), dp(10f), dp(12f), dp(4f))
         header.layoutParams = hp
+        Glass.elevate(this, header, 26f, 10f)
         headerTitle = tv("Today", 22f, Glass.TEXT, true)
         headerSub = tv("", 13f, Glass.MUTED)
         headerSub.layoutParams = lp(t = dp(2f))
@@ -252,6 +256,7 @@ class MainActivity : Activity() {
         np.gravity = Gravity.BOTTOM
         np.setMargins(dp(14f), 0, dp(14f), dp(12f))
         navBar.layoutParams = np
+        Glass.elevate(this, navBar, 34f, 16f)
         root.addView(navBar)
 
         // FAB
@@ -277,6 +282,7 @@ class MainActivity : Activity() {
         up.bottomMargin = dp(96f)
         undoBar.layoutParams = up
         undoBar.visibility = View.GONE
+        Glass.elevate(this, undoBar, 22f, 12f)
         root.addView(undoBar)
 
         sheetRoot = FrameLayout(this)
@@ -834,12 +840,19 @@ class MainActivity : Activity() {
 
     /* ---------------- sheets ---------------- */
 
-    /** Blur everything behind a sheet (Android 12+). Older versions rely on
-     *  the dark scrim + the solid sheet panel instead. */
+    /** Frost everything behind a sheet (Android 12+): a double-pass blur for
+     *  depth + a saturation lift — the iOS frosted-glass recipe. Older
+     *  versions rely on the dark scrim + the solid sheet panel instead. */
     private fun setBackdropBlur(on: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
         try {
-            val fx = if (on) RenderEffect.createBlurEffect(24f, 24f, Shader.TileMode.CLAMP) else null
+            val fx = if (on) {
+                val cm = ColorMatrix().apply { setSaturation(1.45f) }
+                val sat = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm))
+                val b1 = RenderEffect.createBlurEffect(30f, 30f, Shader.TileMode.CLAMP)
+                val b2 = RenderEffect.createBlurEffect(30f, 30f, Shader.TileMode.CLAMP)
+                RenderEffect.createChainEffect(b2, RenderEffect.createChainEffect(b1, sat))
+            } else null
             wallpaperHolder.setRenderEffect(fx)
             mainColumn.setRenderEffect(fx)
             navBar.setRenderEffect(fx)
@@ -860,6 +873,7 @@ class MainActivity : Activity() {
         pp.gravity = Gravity.BOTTOM
         pp.setMargins(dp(8f), 0, dp(8f), dp(8f))
         panel.layoutParams = pp
+        Glass.elevate(this, panel, 30f, 28f)
         val handle = View(this)
         val hg = android.graphics.drawable.GradientDrawable()
         hg.cornerRadius = dp(3f).toFloat()
