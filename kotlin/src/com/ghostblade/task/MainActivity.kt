@@ -43,6 +43,20 @@ class MainActivity : Activity() {
     private var editingId: String? = null
     private var lastDeleted: Pair<TaskItem, Int>? = null
 
+    /* Phase 3 screen state */
+    private var boardMode = false
+    private var calCursor: java.util.Calendar = java.util.Calendar.getInstance()
+    private var selDay: String? = null
+    private var focusTaskId: String? = null
+    private var focusTotal = 25 * 60
+    private var focusLeft = 25 * 60
+    private var focusRunning = false
+    private var focusEndAt = 0L
+    private var focusTicker: Runnable? = null
+    private var focusTimeText: TextView? = null
+    private var focusRing: FocusRing? = null
+    private var focusStateText: TextView? = null
+
     private lateinit var root: FrameLayout
     private lateinit var wallpaperHolder: FrameLayout
     private lateinit var headerTitle: TextView
@@ -270,6 +284,7 @@ class MainActivity : Activity() {
     private val TITLES = mapOf("inbox" to "Inbox", "today" to "Today", "upcoming" to "Upcoming", "browse" to "Browse")
 
     private fun render() {
+        if (sub != "focus") pauseFocus()
         renderHeader()
         content.removeAllViews()
         val s = sub
@@ -342,7 +357,8 @@ class MainActivity : Activity() {
         return mapOf(
             "calendar" to "Calendar", "ramble" to "Ramble", "assist" to "Task & Email Assist",
             "history" to "History", "insights" to "Project Insights", "backups" to "Backups & Sync",
-            "stats" to "Productivity", "search" to "Search", "focus" to "Focus Timer"
+            "stats" to "Productivity", "search" to "Search", "focus" to "Focus Timer",
+            "smartplan" to "Smart Plan"
         )[s] ?: "GhostBlade Task"
     }
 
@@ -490,9 +506,9 @@ class MainActivity : Activity() {
         c.addView(sub2)
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         row.layoutParams = lp(t = dp(10f))
-        val plan = ghostBtn("🤖 Smart plan my day") { toast("Smart Plan arrives in Phase 3") }
+        val plan = ghostBtn("🤖 Smart plan my day") { sub = "smartplan"; render() }
         plan.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8f) }
-        val focus = ghostBtn("🎯 Focus timer") { toast("Focus Timer arrives in Phase 3") }
+        val focus = ghostBtn("🎯 Focus timer") { sub = "focus"; render() }
         focus.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         row.addView(plan); row.addView(focus)
         c.addView(row)
@@ -675,6 +691,30 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 56 && resultCode == RESULT_OK && data?.data != null) {
+            try {
+                val text = contentResolver.openInputStream(data.data!!)?.readBytes()?.toString(Charsets.UTF_8) ?: ""
+                if (Store.importData(text)) {
+                    toast("Sync file imported ✅")
+                    view = "today"; sub = null; render()
+                } else toast("That file doesn't look like a GhostBlade sync file")
+            } catch (e: Exception) {
+                toast("Could not read that file")
+            }
+            return
+        }
+        if (requestCode == 57 && resultCode == RESULT_OK && data != null) {
+            val results = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            val spoken = results?.firstOrNull()
+            if (!spoken.isNullOrBlank()) {
+                Store.addTaskFromParse(Parser.parse(spoken))
+                Store.save()
+                Sfx.add()
+                toast("Added from voice 🎙️")
+                view = "today"; sub = null; render()
+            }
+            return
+        }
         if (requestCode == 55 && resultCode == RESULT_OK && data?.data != null) {
             try {
                 val uri = data.data!!
@@ -704,8 +744,18 @@ class MainActivity : Activity() {
             s.startsWith("project:") -> {
                 val p = Store.state.projects.find { it.id == s.substring(8) }
                 if (p == null) { content.addView(emptyView("📁", "Project not found.")); return }
-                val list = Store.sortTasks(Store.state.tasks.filter { it.projectId == p.id })
-                renderTaskList(list, "📁", "No open tasks in this project.")
+                val toggle = LinearLayout(this); toggle.orientation = LinearLayout.HORIZONTAL
+                toggle.layoutParams = lp(b = dp(10f))
+                val lBtn = chipBtn("☰ List", !boardMode) { boardMode = false; render() }
+                val bBtn = chipBtn("▦ Board", boardMode) { boardMode = true; render() }
+                lBtn.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+                toggle.addView(lBtn); toggle.addView(bBtn)
+                content.addView(toggle)
+                if (boardMode) renderBoard(p)
+                else {
+                    val list = Store.sortTasks(Store.state.tasks.filter { it.projectId == p.id })
+                    renderTaskList(list, "📁", "No open tasks in this project.")
+                }
             }
             s.startsWith("filter:") -> {
                 val f = Store.state.filters.find { it.id == s.substring(7) }
@@ -739,7 +789,16 @@ class MainActivity : Activity() {
                 content.addView(del)
             }
             s == "search" -> renderSearch()
-            else -> content.addView(emptyView("🛠️", "This screen arrives in Phase 3 of the Kotlin build."))
+            s == "calendar" -> renderCalendar()
+            s == "focus" -> renderFocus()
+            s == "stats" -> renderStats()
+            s == "insights" -> renderInsights()
+            s == "history" -> renderHistory()
+            s == "ramble" -> renderRamble()
+            s == "assist" -> renderAssist()
+            s == "backups" -> renderBackups()
+            s == "smartplan" -> renderSmartPlan()
+            else -> content.addView(emptyView("🛠️", "Unknown screen."))
         }
     }
 
@@ -1027,6 +1086,662 @@ class MainActivity : Activity() {
             Regex("project|build|app|code").containsMatchIn(t) -> listOf("Define the scope", "Set up the project", "Build the core feature", "Test it", "Ship / share it")
             else -> generic
         }
+    }
+
+    /* ---------------- Phase 3 screens ---------------- */
+
+    private fun fmtWhen(at: Long): String {
+        val d = Dates.dstr(java.util.Calendar.getInstance().apply { timeInMillis = at })
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = at }
+        val hh = cal.get(java.util.Calendar.HOUR_OF_DAY).toString().padStart(2, '0')
+        val mm = cal.get(java.util.Calendar.MINUTE).toString().padStart(2, '0')
+        return when (d) {
+            Dates.today() -> "Today $hh:$mm"
+            Dates.addDays(Dates.today(), -1) -> "Yesterday $hh:$mm"
+            else -> Dates.fmtDay(d) + " $hh:$mm"
+        }
+    }
+
+    private fun progressBar(pct: Float): FrameLayout {
+        val wrap = FrameLayout(this)
+        wrap.background = Glass.chip(this, false)
+        wrap.layoutParams = lp(t = dp(8f))
+        val fill = View(this)
+        fill.background = Glass.accentGradient(this, 3f)
+        wrap.addView(fill, FrameLayout.LayoutParams(0, dp(7f)))
+        wrap.post { fill.layoutParams = FrameLayout.LayoutParams((wrap.width * pct).toInt(), dp(7f)) }
+        return wrap
+    }
+
+    /* ----- Calendar ----- */
+
+    private fun renderCalendar() {
+        val year = calCursor.get(java.util.Calendar.YEAR)
+        val month = calCursor.get(java.util.Calendar.MONTH)
+        val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val prev = tv("‹", 26f, Glass.TEXT, true); prev.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
+        prev.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, -1); render() }
+        val title = tv("${monthNames[month]} $year", 17f, Glass.TEXT, true)
+        title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); title.gravity = Gravity.CENTER
+        val next = tv("›", 26f, Glass.TEXT, true); next.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
+        next.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, 1); render() }
+        head.addView(prev); head.addView(title); head.addView(next)
+        content.addView(head)
+
+        val calCard = card()
+        val dow = LinearLayout(this); dow.orientation = LinearLayout.HORIZONTAL
+        listOf("S", "M", "T", "W", "T", "F", "S").forEach { d ->
+            val t = tv(d, 11.5f, Glass.MUTED, true); t.gravity = Gravity.CENTER
+            t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            dow.addView(t)
+        }
+        calCard.addView(dow)
+        val first = java.util.Calendar.getInstance()
+        first.set(year, month, 1, 0, 0, 0)
+        val startDow = Dates.jsDayOfWeek(first)
+        val daysInMonth = first.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+        var day = 1
+        for (week in 0 until 6) {
+            if (day > daysInMonth) break
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            for (dowI in 0 until 7) {
+                val cell = tv("", 13.5f); cell.gravity = Gravity.CENTER
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f)
+                if (week == 0 && dowI < startDow || day > daysInMonth) {
+                    // blank cell
+                } else {
+                    val ds = year.toString() + "-" + (month + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
+                    val n = Store.state.tasks.count { it.dueDate == ds }
+                    cell.text = day.toString() + if (n > 0) "\n" + "•".repeat(minOf(n, 3)) else ""
+                    cell.textSize = 13.5f
+                    cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.OVERDUE else Glass.TEXT)
+                    when {
+                        ds == selDay -> cell.background = Glass.chip(this, true)
+                        ds == Dates.today() -> {
+                            val g = android.graphics.drawable.GradientDrawable()
+                            g.cornerRadius = dp(12f).toFloat()
+                            g.setStroke(dp(1.5f), Accents.base(this))
+                            cell.background = g
+                        }
+                    }
+                    val dd = ds
+                    cell.setOnClickListener { Sfx.tick(); selDay = dd; render() }
+                    day++
+                }
+                rowL.addView(cell)
+            }
+            calCard.addView(rowL)
+        }
+        content.addView(calCard)
+        val sd = selDay
+        if (sd != null) {
+            content.addView(dayGroup((if (sd == Dates.today()) "TODAY · " else "") + Dates.fmtDay(sd).uppercase()))
+            val list = Store.sortTasks(Store.state.tasks.filter { it.dueDate == sd })
+            if (list.isEmpty()) content.addView(emptyView("🌤️", "Nothing scheduled this day."))
+            else list.forEach { content.addView(taskRow(it)) }
+            val add = accentBtn("＋ Add task on this day") { openQuickAdd(sd) }
+            content.addView(add)
+        } else {
+            content.addView(tv("Tap a day to see its tasks. Dots = scheduled tasks.", 13f, Glass.MUTED))
+        }
+    }
+
+    /* ----- Focus timer ----- */
+
+    private fun fmtClock(sec: Int): String =
+        (sec / 60).toString().padStart(2, '0') + ":" + (sec % 60).toString().padStart(2, '0')
+
+    private fun renderFocus() {
+        val c = card()
+        c.addView(tv("Focus on", 13f, Glass.MUTED, true))
+        val names = listOf("— pick a task —") + Store.state.tasks.map { it.title }
+        val ids = listOf<String?>(null) + Store.state.tasks.map { it.id }
+        val sp = spinner(names, ids.indexOf(focusTaskId).coerceAtLeast(0))
+        sp.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                focusTaskId = ids[pos]
+                val t = focusTaskId?.let { Store.byId(it) }
+                if (t?.durationMin != null) {
+                    focusTotal = t.durationMin!! * 60
+                    if (!focusRunning) focusLeft = focusTotal
+                    render()
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        c.addView(sp)
+        val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
+        listOf(10, 25, 45, 60).forEach { m ->
+            val ch = chipBtn(m.toString() + "m", focusTotal == m * 60) {
+                focusTotal = m * 60
+                if (!focusRunning) focusLeft = focusTotal
+                render()
+            }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            chipsRow.addView(ch)
+        }
+        c.addView(chipsRow)
+
+        val ringWrap = FrameLayout(this)
+        ringWrap.layoutParams = lp(t = dp(16f), b = dp(6f))
+        val ring = FocusRing(this)
+        ring.ringColor = Accents.base(this)
+        ring.fraction = if (focusTotal > 0) focusLeft.toFloat() / focusTotal else 0f
+        ring.layoutParams = FrameLayout.LayoutParams(dp(190f), dp(190f)).apply { gravity = Gravity.CENTER }
+        focusRing = ring
+        ringWrap.addView(ring)
+        val timeT = tv(fmtClock(focusLeft), 40f, Glass.TEXT, true)
+        timeT.gravity = Gravity.CENTER
+        timeT.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        focusTimeText = timeT
+        ringWrap.addView(timeT)
+        c.addView(ringWrap)
+        val stateT = tv(if (focusRunning) "Focusing…" else "Ready when you are", 13.5f, Glass.MUTED)
+        stateT.gravity = Gravity.CENTER
+        focusStateText = stateT
+        c.addView(stateT)
+
+        val btnRow = LinearLayout(this); btnRow.orientation = LinearLayout.HORIZONTAL
+        btnRow.layoutParams = lp(t = dp(12f))
+        val main = accentBtn(if (focusRunning) "⏸ Pause" else "▶ Start focus") {
+            if (focusRunning) pauseFocus() else startFocus()
+            render()
+        }
+        main.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8f) }
+        val stop = ghostBtn("⏹ Stop") {
+            pauseFocus(); focusLeft = focusTotal; render()
+        }
+        stop.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        btnRow.addView(main); btnRow.addView(stop)
+        c.addView(btnRow)
+        content.addView(c)
+        content.addView(tv("Tip: set a task duration in its editor and the timer picks it up automatically. Leaving this screen pauses the timer.", 12.5f, Glass.MUTED))
+    }
+
+    private fun startFocus() {
+        focusRunning = true
+        focusEndAt = System.currentTimeMillis() + focusLeft * 1000L
+        focusTicker?.let { handler.removeCallbacks(it) }
+        val ticker = object : Runnable {
+            override fun run() {
+                focusLeft = Math.ceil((focusEndAt - System.currentTimeMillis()) / 1000.0).toInt().coerceAtLeast(0)
+                focusTimeText?.text = fmtClock(focusLeft)
+                focusRing?.fraction = if (focusTotal > 0) focusLeft.toFloat() / focusTotal else 0f
+                if (focusLeft <= 0) {
+                    focusRunning = false
+                    focusLeft = focusTotal
+                    Store.logActivity("focus", "Focus session finished")
+                    Store.save()
+                    Sfx.complete()
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        try {
+                            val vib = getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator
+                            vib?.vibrate(android.os.VibrationEffect.createOneShot(250, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                        } catch (e: Exception) {}
+                    }
+                    toast("Focus complete 🎉")
+                    if (sub == "focus") render()
+                    return
+                }
+                handler.postDelayed(this, 250)
+            }
+        }
+        focusTicker = ticker
+        handler.postDelayed(ticker, 250)
+    }
+
+    private fun pauseFocus() {
+        if (focusRunning) {
+            focusLeft = Math.ceil((focusEndAt - System.currentTimeMillis()) / 1000.0).toInt().coerceAtLeast(0)
+            focusRunning = false
+        }
+        focusTicker?.let { handler.removeCallbacks(it) }
+        focusTicker = null
+    }
+
+    /* ----- Stats ----- */
+
+    private fun statCard(big: String, smallTxt: String): LinearLayout {
+        val c = card(13)
+        c.addView(tv(big, 21f, Glass.TEXT, true))
+        c.addView(tv(smallTxt, 12f, Glass.MUTED))
+        return c
+    }
+
+    private fun renderStats() {
+        val grid1 = LinearLayout(this); grid1.orientation = LinearLayout.HORIZONTAL
+        val sc1 = statCard("🔥 " + Store.currentStreak(), "day streak")
+        sc1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        val sc2 = statCard(Store.completionsOn(Dates.today()).toString(), "done today")
+        sc2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        grid1.addView(sc1); grid1.addView(sc2)
+        content.addView(grid1)
+        val last7 = (6 downTo 0).sumOf { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
+        val grid2 = LinearLayout(this); grid2.orientation = LinearLayout.HORIZONTAL
+        val sc3 = statCard(last7.toString(), "done in 7 days")
+        sc3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        val sc4 = statCard(Store.state.completions.size.toString(), "all-time done")
+        sc4.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        grid2.addView(sc3); grid2.addView(sc4)
+        content.addView(grid2)
+
+        val chart = card()
+        chart.addView(tv("Last 7 days", 14.5f, Glass.TEXT, true))
+        val counts = (6 downTo 0).map { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
+        val max = Math.max(1, counts.maxOrNull() ?: 1)
+        val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
+        bars.gravity = Gravity.BOTTOM
+        bars.layoutParams = lp(t = dp(12f))
+        val dayNames = arrayOf("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa")
+        counts.forEachIndexed { i, n ->
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.gravity = Gravity.CENTER_HORIZONTAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colL.addView(tv(n.toString(), 11.5f, Glass.MUTED, true))
+            val bar = View(this)
+            val h = dp(8f) + (dp(74f) * n / max)
+            bar.layoutParams = LinearLayout.LayoutParams(dp(20f), h).apply { topMargin = dp(4f); bottomMargin = dp(4f) }
+            val g = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(Accents.acc2(this), Accents.acc1(this))
+            )
+            g.cornerRadius = dp(6f).toFloat()
+            bar.background = g
+            colL.addView(bar)
+            val d = Dates.parse(Dates.addDays(Dates.today(), -(6 - i)))
+            colL.addView(tv(dayNames[Dates.jsDayOfWeek(d)], 11f, Glass.MUTED))
+            bars.addView(colL)
+        }
+        chart.addView(bars)
+        content.addView(chart)
+
+        val per = card()
+        per.addView(tv("Completions by project", 14.5f, Glass.TEXT, true))
+        val byProj = Store.state.projects.map { p ->
+            p.name to Store.state.completions.count { it.projectId == p.id }
+        }.filter { it.second > 0 }.sortedByDescending { it.second }
+        if (byProj.isEmpty()) per.addView(tv("Complete a task and it will show up here.", 13f, Glass.MUTED))
+        byProj.forEach { (name, n) ->
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.layoutParams = lp(t = dp(6f))
+            val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.TEXT, true))
+            per.addView(rowL)
+        }
+        content.addView(per)
+    }
+
+    /* ----- Insights ----- */
+
+    private fun renderInsights() {
+        if (Store.state.projects.isEmpty()) {
+            content.addView(emptyView("💡", "Create a project first (Quick Add with #Name)."))
+            return
+        }
+        data class Row(val p: ProjectItem, val open: Int, val done7: Int, val pct: Float)
+        val rows = Store.state.projects.map { p ->
+            val open = Store.state.tasks.count { it.projectId == p.id }
+            val done7 = Store.state.completions.count { c ->
+                c.projectId == p.id && c.date > Dates.addDays(Dates.today(), -7) && c.date <= Dates.today()
+            }
+            Row(p, open, done7, if (open + done7 > 0) done7.toFloat() / (open + done7) else 0f)
+        }.sortedByDescending { it.open + it.done7 }
+        val busiest = rows.firstOrNull()
+        if (busiest != null && busiest.open + busiest.done7 > 0) {
+            val c = card()
+            c.addView(tv("🏆 Busiest project", 13f, Glass.GOLD, true))
+            val b = tv("#" + busiest.p.name, 17f, Glass.TEXT, true); b.layoutParams = lp(t = dp(3f))
+            c.addView(b)
+            c.addView(tv("${busiest.open} open · ${busiest.done7} done this week", 13f, Glass.MUTED))
+            content.addView(c)
+        }
+        rows.forEach { r ->
+            val c = card(13)
+            val headL = LinearLayout(this); headL.orientation = LinearLayout.HORIZONTAL
+            val nm = tv("#" + r.p.name, 15f, Glass.TEXT, true); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            headL.addView(nm)
+            headL.addView(tv("${(r.pct * 100).toInt()}% weekly completion", 12.5f, Glass.MUTED))
+            c.addView(headL)
+            c.addView(tv("${r.open} open · ${r.done7} done in the last 7 days", 13f, Glass.MUTED))
+            c.addView(progressBar(r.pct))
+            content.addView(c)
+        }
+    }
+
+    /* ----- History ----- */
+
+    private fun renderHistory() {
+        if (Store.state.activities.isEmpty()) {
+            content.addView(emptyView("🕘", "Nothing yet — your activity will appear here."))
+            return
+        }
+        val c = card(8)
+        Store.state.activities.take(150).forEach { a ->
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+            val icon = when (a.type) {
+                "create" -> "➕"; "complete" -> "✅"; "delete" -> "🗑️"
+                "seed" -> "🌱"; "backup" -> "💾"; "focus" -> "🎯"; else -> "•"
+            }
+            val ic = tv(icon, 15f); ic.layoutParams = LinearLayout.LayoutParams(dp(30f), -2)
+            rowL.addView(ic)
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colL.addView(tv(a.text, 14f))
+            colL.addView(tv(fmtWhen(a.at), 12f, Glass.MUTED))
+            rowL.addView(colL)
+            c.addView(rowL)
+        }
+        content.addView(c)
+    }
+
+    /* ----- Ramble ----- */
+
+    private fun renderRamble() {
+        val c = card()
+        c.addView(tv("Say it or type it — one task per line. Dates, #projects, @labels and p1 work in every line.", 13.5f, Glass.MUTED))
+        val ta = input("e.g.\nCall mom tomorrow @family\nBuy milk #Shopping\nGym at 7am every day p2", "", multi = true)
+        ta.minLines = 5
+        ta.gravity = Gravity.TOP
+        c.addView(ta)
+        val mic = ghostBtn("🎙️ Start listening") {
+            if (Build.VERSION.SDK_INT >= 23 &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 91)
+                toast("Allow microphone, then tap again")
+            } else {
+                try {
+                    val i = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    i.putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak your tasks")
+                    startActivityForResult(i, 57)
+                } catch (e: Exception) {
+                    toast("Voice input isn't available on this device — typing works too")
+                }
+            }
+        }
+        mic.layoutParams = lp(b = dp(10f))
+        c.addView(mic)
+        val add = accentBtn("Add all tasks") {
+            val lines = ta.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.isEmpty()) { toast("Nothing to add yet"); return@accentBtn }
+            lines.forEach { line -> Store.addTaskFromParse(Parser.parse(line)) }
+            Store.save()
+            Sfx.add()
+            toast("Added ${lines.size} tasks ✅")
+            view = "today"; sub = null; render()
+        }
+        c.addView(add)
+        content.addView(c)
+    }
+
+    /* ----- Assist ----- */
+
+    private fun extractLines(text: String): List<String> =
+        text.split("\n").map { raw ->
+            var line = raw.trim()
+            line = line.replace(Regex("""^[\s•\-*▪◦]+"""), "")
+            line = line.replace(Regex("""^\[[ xX]\]\s*"""), "")
+            line = line.replace(Regex("""^\d{1,2}[.)]\s*"""), "")
+            line = line.replace(Regex("""\s+by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|next week)\s*$""", RegexOption.IGNORE_CASE), "")
+            line.trim()
+        }.filter { it.isNotEmpty() }
+
+    private fun renderAssist() {
+        val c = card()
+        c.addView(tv("Paste an email, message or brain-dump — one task per line. GhostBlade extracts clean tasks and keeps dates, projects and priorities.", 13.5f, Glass.MUTED))
+        val ta = input("Paste text here…", "", multi = true)
+        ta.minLines = 6
+        ta.gravity = Gravity.TOP
+        c.addView(ta)
+        val ex = accentBtn("Extract tasks") {
+            val lines = extractLines(ta.text.toString())
+            if (lines.isEmpty()) { toast("Nothing found — paste some text first"); return@accentBtn }
+            lines.forEach { line -> Store.addTaskFromParse(Parser.parse(line)) }
+            Store.save()
+            Sfx.add()
+            toast("Extracted ${lines.size} tasks ✅")
+            view = "today"; sub = null; render()
+        }
+        c.addView(ex)
+        content.addView(c)
+        content.addView(dayGroup("BREAK A TASK DOWN"))
+        content.addView(tv("Big task? Let GhostBlade draft the steps — you can edit them in the task editor.", 13f, Glass.MUTED))
+        Store.state.tasks.take(12).forEach { t ->
+            content.addView(menuItem("📝", t.title, null, null) {
+                breakdownFor(t.title).forEach { x -> t.subtasks.add(Subtask(uid(), x, false)) }
+                Store.save()
+                Sfx.add()
+                toast("Subtasks added to \"${t.title}\" 🤖")
+            })
+        }
+    }
+
+    /* ----- Backups & Sync ----- */
+
+    private fun writeDownload(name: String, text: String) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val cv = android.content.ContentValues()
+                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                    ?: throw Exception("insert failed")
+                val os = contentResolver.openOutputStream(uri) ?: throw Exception("open failed")
+                os.write(text.toByteArray(Charsets.UTF_8)); os.close()
+            } else {
+                val f = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), name)
+                val os = FileOutputStream(f)
+                os.write(text.toByteArray(Charsets.UTF_8)); os.close()
+            }
+            toast("Saved to Downloads: $name")
+        } catch (e: Exception) {
+            toast("Could not save file")
+        }
+    }
+
+    private fun renderBackups() {
+        val info = card()
+        info.addView(tv("💾 Automatic daily backups", 15f, Glass.TEXT, true))
+        info.addView(tv("GhostBlade keeps a snapshot of your data on this device every day (up to 10). No account, no internet — this app has no internet permission at all.", 13f, Glass.MUTED))
+        content.addView(info)
+        val c = card()
+        c.addView(tv("Sync between devices", 15f, Glass.TEXT, true))
+        c.addView(tv("Export a sync file here, copy it to your other device (USB, Bluetooth, any chat app), then Import it there. Your data moves — nothing touches a server.", 13f, Glass.MUTED))
+        val exp = accentBtn("⬇️ Export sync file") { writeDownload("ghostblade-sync.json", Store.snapshot()) }
+        exp.layoutParams = lp(t = dp(10f), b = dp(8f))
+        c.addView(exp)
+        val imp = ghostBtn("⬆️ Import sync file") {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            i.type = "*/*"
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            startActivityForResult(i, 56)
+        }
+        imp.layoutParams = lp(b = dp(8f))
+        c.addView(imp)
+        val copy = ghostBtn("📋 Copy all data as JSON") {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("GhostBlade Task data", Store.snapshot()))
+            toast("Copied — keep it somewhere safe")
+        }
+        c.addView(copy)
+        content.addView(c)
+        val mk = ghostBtn("＋ Create backup now") {
+            Store.state.backups.add(0, BackupItem(uid(), System.currentTimeMillis(), false, Store.snapshot()))
+            Store.logActivity("backup", "Manual backup created")
+            Store.save(); render(); toast("Backup created 💾")
+        }
+        content.addView(mk)
+        content.addView(dayGroup("SAVED BACKUPS"))
+        if (Store.state.backups.isEmpty()) content.addView(tv("No backups yet.", 13f, Glass.MUTED))
+        Store.state.backups.forEach { b ->
+            val rowC = card(12)
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.gravity = Gravity.CENTER_VERTICAL
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colL.addView(tv(fmtWhen(b.at), 14.5f))
+            colL.addView(tv(if (b.auto) "Automatic" else "Manual", 12.5f, Glass.MUTED))
+            rowL.addView(colL)
+            val restore = chipBtn("Restore", false) {
+                AlertDialog.Builder(this)
+                    .setTitle("Restore this backup?")
+                    .setMessage("Your current tasks will be replaced by the backup from ${fmtWhen(b.at)}.")
+                    .setPositiveButton("Restore") { _, _ ->
+                        if (Store.importData(b.data)) { toast("Backup restored ✅"); view = "today"; sub = null; render() }
+                        else toast("That backup looks damaged")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            rowL.addView(restore)
+            val delB = tv("✕", 15f, Glass.MUTED)
+            delB.setPadding(dp(10f), dp(6f), dp(2f), dp(6f))
+            delB.setOnClickListener {
+                Store.state.backups.removeAll { it.id == b.id }
+                Store.save(); render()
+            }
+            rowL.addView(delB)
+            rowC.addView(rowL)
+            content.addView(rowC)
+        }
+    }
+
+    /* ----- Smart Plan ----- */
+
+    private fun renderSmartPlan() {
+        val items = smartPlanItems()
+        val intro = card()
+        intro.addView(tv("🤖 Smart Plan", 15.5f, Glass.TEXT, true))
+        intro.addView(tv("An offline planner: today's tasks in priority order, starting at the next quarter-hour, using each task's duration (25 min default) with 10-minute breaks. No cloud, no AI bill — just a solid plan.", 13f, Glass.MUTED))
+        content.addView(intro)
+        if (items.isEmpty()) {
+            content.addView(emptyView("🌤️", "No tasks scheduled for today — nothing to plan."))
+            return
+        }
+        var totalMin = 0
+        items.forEach { (t, start, dur) ->
+            totalMin += dur
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.gravity = Gravity.CENTER_VERTICAL
+            rowL.background = Glass.panel(this, 18f)
+            rowL.setPadding(dp(13f), dp(11f), dp(13f), dp(11f))
+            rowL.layoutParams = lp(b = dp(8f))
+            val time = tv(start, 14.5f, Accents.acc1(this), true)
+            time.layoutParams = LinearLayout.LayoutParams(dp(56f), -2)
+            rowL.addView(time)
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colL.addView(tv(t.title, 14.5f))
+            colL.addView(tv("P${t.priority} · $dur min", 12f, Glass.MUTED))
+            rowL.addView(colL)
+            content.addView(rowL)
+        }
+        content.addView(tv("Total focused time: ${totalMin / 60}h ${totalMin % 60}m (plus breaks)", 13f, Glass.MUTED))
+        val apply = accentBtn("Apply this plan") {
+            items.forEach { (t, start, _) ->
+                t.dueTime = start
+                t.dueDate = Dates.today()
+                if (t.reminderOffsetMin == null) t.reminderOffsetMin = 0
+                Reminders.sync(this, t)
+            }
+            Store.save()
+            Sfx.add()
+            toast("Plan applied — reminders set 🔔")
+            sub = null; view = "today"; render()
+        }
+        apply.layoutParams = lp(t = dp(12f))
+        content.addView(apply)
+    }
+
+    private fun smartPlanItems(): List<Triple<TaskItem, String, Int>> {
+        val list = Store.state.tasks
+            .filter { it.dueDate == Dates.today() || Dates.isOverdue(it) }
+            .sortedWith(compareBy<TaskItem> { it.priority }.thenByDescending { it.durationMin ?: 25 })
+        val now = java.util.Calendar.getInstance()
+        val cur = java.util.Calendar.getInstance()
+        cur.set(java.util.Calendar.SECOND, 0); cur.set(java.util.Calendar.MILLISECOND, 0)
+        val minsNow = cur.get(java.util.Calendar.MINUTE)
+        val rounded = Math.ceil((minsNow + 1) / 15.0).toInt() * 15
+        cur.add(java.util.Calendar.MINUTE, rounded - minsNow)
+        if (cur.before(now)) cur.add(java.util.Calendar.MINUTE, 15)
+        fun fmt(c: java.util.Calendar) =
+            c.get(java.util.Calendar.HOUR_OF_DAY).toString().padStart(2, '0') + ":" +
+                c.get(java.util.Calendar.MINUTE).toString().padStart(2, '0')
+        return list.map { t ->
+            val dur = t.durationMin ?: 25
+            val start = fmt(cur)
+            cur.add(java.util.Calendar.MINUTE, dur + 10)
+            Triple(t, start, dur)
+        }
+    }
+
+    /* ----- Project board ----- */
+
+    private fun renderBoard(p: ProjectItem) {
+        val cols = listOf("todo" to "To do", "doing" to "Doing", "done" to "Done")
+        val board = LinearLayout(this); board.orientation = LinearLayout.HORIZONTAL
+        cols.forEach { (status, name) ->
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.background = Glass.panel(this, 18f)
+            colL.setPadding(dp(6f), dp(8f), dp(6f), dp(8f))
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply {
+                rightMargin = if (status != "done") dp(7f) else 0
+            }
+            val headT = tv(name.uppercase(), 11f, Glass.MUTED, true); headT.gravity = Gravity.CENTER
+            colL.addView(headT)
+            val tasks = Store.state.tasks.filter { it.projectId == p.id && it.status == status }
+            if (tasks.isEmpty()) {
+                val e = tv("—", 12f, Glass.MUTED); e.gravity = Gravity.CENTER
+                colL.addView(e)
+            }
+            tasks.forEach { t ->
+                val cardL = LinearLayout(this); cardL.orientation = LinearLayout.VERTICAL
+                cardL.background = Glass.panel(this, 14f)
+                cardL.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+                cardL.layoutParams = lp(t = dp(7f))
+                cardL.addView(tv(t.title, 12.5f))
+                val meta = mutableListOf<String>()
+                if (t.priority < 4) meta.add("P" + t.priority)
+                if (t.dueDate != null) meta.add(if (t.dueDate == Dates.today()) "Today" else Dates.fmtDay(t.dueDate!!))
+                if (meta.isNotEmpty()) cardL.addView(tv(meta.joinToString(" · "), 10.5f, Glass.MUTED))
+                val btns = LinearLayout(this); btns.orientation = LinearLayout.HORIZONTAL
+                btns.layoutParams = lp(t = dp(6f))
+                if (status != "todo") {
+                    val b = tv("◀", 13f); b.setPadding(dp(4f), dp(2f), dp(8f), dp(2f))
+                    b.setOnClickListener {
+                        t.status = if (status == "done") "doing" else "todo"
+                        Store.save(); Sfx.tick(); render()
+                    }
+                    btns.addView(b)
+                }
+                if (status == "done") {
+                    val b = tv("✓", 13f, Glass.GREEN, true); b.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
+                    b.setOnClickListener {
+                        val msg = Store.completeTask(t.id)
+                        Sfx.complete(); toast(msg); render()
+                    }
+                    btns.addView(b)
+                } else {
+                    val b = tv("▶", 13f); b.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
+                    b.setOnClickListener {
+                        t.status = if (status == "todo") "doing" else "done"
+                        Store.save(); Sfx.tick(); render()
+                    }
+                    btns.addView(b)
+                }
+                cardL.addView(btns)
+                cardL.setOnClickListener { openEditor(t.id) }
+                colL.addView(cardL)
+            }
+            board.addView(colL)
+        }
+        content.addView(board)
+        content.addView(tv("Move tasks with ◀ ▶. In the Done column, ✓ completes the task for real.", 12.5f, Glass.MUTED))
     }
 
     /* ---------------- location capture ---------------- */
