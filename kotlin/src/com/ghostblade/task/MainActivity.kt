@@ -1,10 +1,13 @@
 package com.ghostblade.task
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ColorMatrix
@@ -45,7 +48,23 @@ class MainActivity : Activity() {
     private var view = "today"
     private var sub: String? = null
     private var lastTab = "today"
+    /** Screen identity at the last render — entrance animations run only
+     *  when it changes, never on same-screen state refreshes. */
+    private var lastRenderKey: String? = null
+    /** iOS-style sheet easing (cubic-bezier 0.32, 0.72, 0, 1). */
+    private val sheetEase = android.view.animation.PathInterpolator(0.32f, 0.72f, 0f, 1f)
     private var editingId: String? = null
+    /** Back-stack for sheet sub-navigation (Quick Add → Date picker, …).
+     *  Each entry rebuilds the sheet to return to. Cleared whenever a sheet
+     *  closes; empty means Back closes the sheet. */
+    private val sheetStack = ArrayDeque<() -> View>()
+    /** Snapshot of the task as last saved when the editor opened (or after a
+     *  stash+save rebuild); the discard guard compares the editor fields
+     *  against it. */
+    private var editorSnapshot: TaskItem? = null
+    /** Set by buildEditor: true when the editor's fields differ from the
+     *  snapshot above. Null when no editor is open. */
+    private var editorDirtyCheck: (() -> Boolean)? = null
     private var lastDeleted: Pair<TaskItem, Int>? = null
 
     /* Phase 3 screen state */
@@ -116,9 +135,9 @@ class MainActivity : Activity() {
     }
 
     private fun chipBtn(label: String, on: Boolean, click: () -> Unit): TextView {
-        val c = tv(label, 12.5f)
+        val c = tv(label, 13f)
         c.background = Glass.chip(this, on)
-        c.setPadding(dp(11f), dp(5f), dp(11f), dp(5f))
+        c.setPadding(dp(11f), dp(8f), dp(11f), dp(8f))
         c.setOnClickListener { click() }
         return c
     }
@@ -133,7 +152,7 @@ class MainActivity : Activity() {
     }
 
     private fun ghostBtn(label: String, click: () -> Unit): TextView {
-        val b = tv(label, 14.5f)
+        val b = tv(label, 15f)
         b.gravity = Gravity.CENTER
         b.background = Glass.chip(this, false)
         b.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
@@ -157,7 +176,18 @@ class MainActivity : Activity() {
 
     private fun spinner(items: List<String>, selected: Int): Spinner {
         val sp = Spinner(this)
-        val ad = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        // Style the selected-item view with the theme text colour — the stock
+        // adapter inherits the dark Material theme's near-white text, which is
+        // invisible on the Frost White theme's light glass panels. The dropdown
+        // popup keeps the system dark styling (readable in every theme).
+        val ad = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+            override fun getView(pos: Int, convert: View?, parent: ViewGroup): View {
+                val v = super.getView(pos, convert, parent) as TextView
+                v.setTextColor(Glass.text(this@MainActivity))
+                v.textSize = 15f
+                return v
+            }
+        }
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         sp.adapter = ad
         sp.setSelection(selected.coerceIn(0, items.size - 1))
@@ -167,23 +197,29 @@ class MainActivity : Activity() {
     }
 
     private fun label(text: String): TextView {
-        val l = tv(text, 12.5f, Glass.muted(this@MainActivity))
+        val l = tv(text, 13f, Glass.muted(this@MainActivity))
         l.layoutParams = lp(t = dp(8f), b = dp(4f))
         return l
     }
 
     private fun dayGroup(text: String): TextView {
-        val l = tv(text, 12.5f, Glass.muted(this@MainActivity), true)
+        val l = tv(text, 13f, Glass.muted(this@MainActivity), true)
         l.layoutParams = lp(t = dp(16f), b = dp(8f))
         return l
     }
 
-    private fun emptyView(emoji: String, text: String): TextView {
-        val t = tv("$emoji\n$text", 14f, Glass.muted(this@MainActivity))
-        t.gravity = Gravity.CENTER
-        t.setLineSpacing(dp(4f).toFloat(), 1.2f)
-        t.setPadding(dp(20f), dp(38f), dp(20f), dp(38f))
-        return t
+    private fun emptyView(emoji: String, text: String): View {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.gravity = Gravity.CENTER
+        wrap.setPadding(dp(20f), dp(38f), dp(20f), dp(38f))
+        val glyph = tv(emoji, 30f, Glass.muted(this@MainActivity))
+        glyph.gravity = Gravity.CENTER
+        val caption = tv(text, 13f, Glass.muted(this@MainActivity))
+        caption.gravity = Gravity.CENTER
+        caption.layoutParams = lp(t = dp(10f))
+        wrap.addView(glyph); wrap.addView(caption)
+        return wrap
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
@@ -203,6 +239,30 @@ class MainActivity : Activity() {
         LocationReceiver.rearmAll(this)
         buildRoot()
         render()
+        lastSeenDay = Dates.today()
+    }
+
+    /** The app can stay alive across midnight (left open, or restored from
+     *  recents without recreation) — when the day changes under it, roll the
+     *  Performance analytics over and re-render instead of showing
+     *  yesterday's state until the next cold start. */
+    override fun onResume() {
+        super.onResume()
+        val today = Dates.today()
+        if (lastSeenDay.isNotEmpty() && today != lastSeenDay) {
+            lastSeenDay = today
+            try { Db.rollover(Store.state) } catch (e: Exception) { /* analytics only */ }
+            render()
+        }
+    }
+
+    /** Stop the focus ticker and the undo auto-hide when the activity is
+     *  destroyed, so no handler callback fires against dead views or
+     *  saves/vibrates after the user has left the app. */
+    override fun onDestroy() {
+        focusTicker?.let { handler.removeCallbacks(it) }
+        undoHide?.let { handler.removeCallbacks(it) }
+        super.onDestroy()
     }
 
     private fun buildRoot() {
@@ -223,10 +283,10 @@ class MainActivity : Activity() {
         header.background = Glass.panel(this, 26f)
         header.setPadding(dp(16f), dp(14f), dp(16f), dp(12f))
         val hp = FrameLayout.LayoutParams(-1, -2)
-        hp.setMargins(dp(12f), dp(10f), dp(12f), dp(4f))
+        hp.setMargins(dp(16f), dp(10f), dp(16f), dp(4f))
         header.layoutParams = hp
         Glass.elevate(this, header, 26f, 10f)
-        headerTitle = tv("Today", 22f, Glass.text(this@MainActivity), true)
+        headerTitle = tv("Today", 24f, Glass.text(this@MainActivity), true)
         headerSub = tv("", 13f, Glass.muted(this@MainActivity))
         headerSub.layoutParams = lp(t = dp(2f))
         val progWrap = FrameLayout(this)
@@ -246,7 +306,7 @@ class MainActivity : Activity() {
         scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(dp(14f), dp(6f), dp(14f), dp(120f))
+        content.setPadding(dp(16f), dp(6f), dp(16f), dp(136f))
         scroll.addView(content)
         column.addView(scroll)
 
@@ -257,7 +317,7 @@ class MainActivity : Activity() {
         navBar.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
         val np = FrameLayout.LayoutParams(-1, -2)
         np.gravity = Gravity.BOTTOM
-        np.setMargins(dp(14f), 0, dp(14f), dp(12f))
+        np.setMargins(dp(16f), 0, dp(16f), dp(12f))
         navBar.layoutParams = np
         Glass.elevate(this, navBar, 34f, 16f)
         root.addView(navBar)
@@ -271,6 +331,8 @@ class MainActivity : Activity() {
         fp.setMargins(0, 0, dp(18f), dp(92f))
         fab.layoutParams = fp
         fab.setOnClickListener { openQuickAdd(null) }
+        fab.contentDescription = "Add task"
+        Glass.elevate(this, fab, 28f, 8f)
         fabBtn = fab
         root.addView(fab)
 
@@ -313,20 +375,31 @@ class MainActivity : Activity() {
             view == "upcoming" -> renderUpcoming()
             view == "browse" -> renderBrowse()
         }
-        // entrance animation: directional slide + stagger
+        // Entrance animation runs ONLY when the screen identity changes —
+        // Apple apps animate on navigation, never on state refresh, so
+        // completing a task or toggling a chip no longer replays the whole
+        // list fade/stagger.
         val order = listOf("inbox", "today", "upcoming", "browse")
         var dx = 0f
         if (s == null && view != lastTab && order.contains(view) && order.contains(lastTab)) {
             dx = if (order.indexOf(view) > order.indexOf(lastTab)) 40f else -40f
         }
         if (order.contains(view) && s == null) lastTab = view
-        content.alpha = 0f
-        content.translationX = dx
-        content.animate().alpha(1f).translationX(0f).setDuration(320).start()
-        for (i in 0 until content.childCount) {
-            val ch = content.getChildAt(i)
-            ch.alpha = 0f; ch.translationY = dp(10f).toFloat()
-            ch.animate().alpha(1f).translationY(0f).setStartDelay((i * 30).toLong().coerceAtMost(420)).setDuration(380).start()
+        val renderKey = s ?: view
+        if (renderKey != lastRenderKey) {
+            lastRenderKey = renderKey
+            content.alpha = 0f
+            content.translationX = dx
+            content.animate().alpha(1f).translationX(0f).setDuration(320).setInterpolator(sheetEase).start()
+            for (i in 0 until content.childCount) {
+                val ch = content.getChildAt(i)
+                ch.alpha = 0f; ch.translationY = dp(10f).toFloat()
+                ch.animate().alpha(1f).translationY(0f).setStartDelay((i * 30).toLong().coerceAtMost(420)).setDuration(380).setInterpolator(sheetEase).start()
+            }
+        } else {
+            content.animate().cancel()
+            content.alpha = 1f
+            content.translationX = 0f
         }
         renderNav()
     }
@@ -348,9 +421,21 @@ class MainActivity : Activity() {
                     (if (planned > 0) " · ⏱ ${planned}m planned" else "") + " · 🔥 ${Store.currentStreak()} day streak"
                 headerProgWrap.visibility = View.VISIBLE
                 val pct = if (total > 0) done.toFloat() / total else 0f
+                // Batch 9 (P2-10) — sweep the fill from its current width
+                // instead of snapping, so completing a task visibly moves it.
                 headerProgWrap.post {
-                    val w = (headerProgWrap.width * pct).toInt()
-                    headerProg.layoutParams = FrameLayout.LayoutParams(w, -1)
+                    val target = (headerProgWrap.width * pct).toInt()
+                    val from = headerProg.width
+                    if (from == target) {
+                        headerProg.layoutParams = FrameLayout.LayoutParams(target, -1)
+                    } else {
+                        ValueAnimator.ofInt(from, target).apply {
+                            duration = 300
+                            interpolator = sheetEase
+                            addUpdateListener { headerProg.layoutParams = FrameLayout.LayoutParams(it.animatedValue as Int, -1) }
+                            start()
+                        }
+                    }
                 }
             }
             view == "inbox" -> {
@@ -393,8 +478,9 @@ class MainActivity : Activity() {
             b.gravity = Gravity.CENTER
             b.setPadding(dp(14f), dp(7f), dp(14f), dp(7f))
             if (on) b.background = Glass.chip(this, true)
+            b.contentDescription = lbl
             val icT = tv(ic, 19f); icT.gravity = Gravity.CENTER
-            val lbT = tv(lbl, 10.5f, if (on) Glass.text(this@MainActivity) else Glass.muted(this@MainActivity), on); lbT.gravity = Gravity.CENTER
+            val lbT = tv(lbl, 11f, if (on) Glass.text(this@MainActivity) else Glass.muted(this@MainActivity), on); lbT.gravity = Gravity.CENTER
             b.addView(icT); b.addView(lbT)
             b.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             b.setOnClickListener {
@@ -435,24 +521,27 @@ class MainActivity : Activity() {
         row.orientation = LinearLayout.HORIZONTAL
         row.background = Glass.panel(this, 20f)
         row.setPadding(dp(13f), dp(12f), dp(13f), dp(12f))
-        row.layoutParams = lp(b = dp(9f))
+        row.layoutParams = lp(b = dp(10f))
         row.gravity = Gravity.TOP
 
-        val check = tv("", 13f, 0xFFFFFFFF.toInt(), true)
+        val check = tv("", 14f, 0xFFFFFFFF.toInt(), true)
         check.gravity = Gravity.CENTER
         check.background = Glass.checkCircle(this, t.priority, false)
-        check.layoutParams = LinearLayout.LayoutParams(dp(23f), dp(23f)).apply { topMargin = dp(1f) }
+        check.contentDescription = "Complete task"
+        check.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f))
         check.setOnClickListener { completeWithAnim(t, row, check) }
         row.addView(check)
 
         val body = LinearLayout(this)
         body.orientation = LinearLayout.VERTICAL
         body.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(11f) }
-        val title = tv(t.title, 15.5f)
+        val title = tv(t.title, 16f)
         body.addView(title)
         val meta = metaText(t)
         if (meta.isNotEmpty()) {
-            val m = tv(meta, 12.5f, Glass.muted(this@MainActivity))
+            val m = tv(meta, 13f, Glass.muted(this@MainActivity))
+            m.maxLines = 1
+            m.ellipsize = android.text.TextUtils.TruncateAt.END
             m.layoutParams = lp(t = dp(3f))
             body.addView(m)
         }
@@ -466,19 +555,20 @@ class MainActivity : Activity() {
         v.setOnTouchListener { view2, ev ->
             when (ev.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    view2.animate().scaleX(0.97f).scaleY(0.97f).setDuration(150).start()
-                    handler.postDelayed({
-                        if (view2.isPressed) { view2.animate().scaleX(0.94f).scaleY(0.94f).setDuration(200).start(); Sfx.hold() }
-                    }, 160)
+                    view2.animate().scaleX(0.98f).scaleY(0.98f).setDuration(120).start()
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
-                    view2.animate().scaleX(1f).scaleY(1f).setDuration(220).start()
+                    view2.animate().scaleX(1f).scaleY(1f).setDuration(200).start()
             }
             false
         }
     }
 
     private fun completeWithAnim(t: TaskItem, row: View, check: TextView) {
+        // Re-entry guard: a fast double-tap during the ~420ms exit animation
+        // used to complete a recurring task twice (two stats records, two
+        // interval advances). The checkbox is dead until the row is gone.
+        check.isEnabled = false
         check.background = Glass.checkCircle(this, t.priority, true)
         check.text = "✓"
         Sfx.complete()
@@ -513,7 +603,7 @@ class MainActivity : Activity() {
         val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         val greet = if (h < 12) "Good morning" else if (h < 17) "Good afternoon" else "Good evening"
         val icon = if (h < 12) "☀️" else if (h < 17) "🌤️" else "🌙"
-        c.addView(tv("$icon $greet, Sir", 15.5f, Glass.text(this@MainActivity), true))
+        c.addView(tv("$icon $greet, Sir", 16f, Glass.text(this@MainActivity), true))
         val over = Store.state.tasks.count { Dates.isOverdue(it) }
         val todayN = Store.state.tasks.count { it.dueDate == Dates.today() }
         val sub2 = tv(
@@ -558,15 +648,15 @@ class MainActivity : Activity() {
         row.gravity = Gravity.CENTER_VERTICAL
         row.background = Glass.panel(this, 22f)
         row.setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
-        row.layoutParams = lp(b = dp(8f))
+        row.layoutParams = lp(b = dp(10f))
         val ic = tv(icon, 19f); ic.layoutParams = LinearLayout.LayoutParams(dp(30f), -2)
         row.addView(ic)
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
         col.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         col.addView(tv(title, 15f))
-        if (smallTxt != null) col.addView(tv(smallTxt, 12.5f, Glass.muted(this@MainActivity)))
+        if (smallTxt != null) col.addView(tv(smallTxt, 13f, Glass.muted(this@MainActivity)))
         row.addView(col)
-        if (tag != null) row.addView(tv(tag, 11f, Glass.GOLD, true))
+        if (tag != null) row.addView(tv(tag, 11f, Glass.gold(this@MainActivity), true))
         row.setOnClickListener { Sfx.tap(); click() }
         attachPressFx(row)
         return row
@@ -613,7 +703,7 @@ class MainActivity : Activity() {
         pro.forEach { (k, ic, n, d) -> content.addView(menuItem(ic, n, d, "PRO") { sub = k; render() }) }
         content.addView(appearanceCard())
         val about = card()
-        about.addView(tv("GhostBlade Task", 15.5f, Glass.text(this@MainActivity), true))
+        about.addView(tv("GhostBlade Task", 16f, Glass.text(this@MainActivity), true))
         val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, Glass.muted(this@MainActivity))
         ab.layoutParams = lp(t = dp(4f))
         about.addView(ab)
@@ -622,7 +712,7 @@ class MainActivity : Activity() {
 
     private fun appearanceCard(): LinearLayout {
         val c = card()
-        c.addView(tv("🪟 Appearance", 15.5f, Glass.text(this@MainActivity), true))
+        c.addView(tv("🪟 Appearance", 16f, Glass.text(this@MainActivity), true))
         c.addView(label("Theme"))
         val tRow = LinearLayout(this); tRow.orientation = LinearLayout.HORIZONTAL
         listOf("aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
@@ -631,7 +721,7 @@ class MainActivity : Activity() {
             tRow.addView(ch)
         }
         c.addView(tRow)
-        val tNote = tv("Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 12f, Glass.muted(this@MainActivity))
+        val tNote = tv("Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 13f, Glass.muted(this@MainActivity))
         tNote.layoutParams = lp(t = dp(4f), b = dp(2f))
         c.addView(tNote)
         c.addView(label("Glass style"))
@@ -680,7 +770,7 @@ class MainActivity : Activity() {
             rRow.addView(ch)
         }
         c.addView(rRow)
-        val rNote = tv("Detail lines (dates, subtitles, meta) in your accent colour — the Apple Music look. Pairs best with crimson or pink.", 12f, Glass.muted(this@MainActivity))
+        val rNote = tv("Detail lines (dates, subtitles, meta) in your accent colour — the Apple Music look. Pairs best with crimson or pink.", 13f, Glass.muted(this@MainActivity))
         rNote.layoutParams = lp(t = dp(4f), b = dp(2f))
         c.addView(rNote)
         c.addView(label("Background wallpaper"))
@@ -734,6 +824,7 @@ class MainActivity : Activity() {
     private fun applyStatusBar() {
         val white = Glass.isWhite(this)
         window.statusBarColor = if (white) 0xFFF2F2F6.toInt() else 0xFF06060A.toInt()
+        window.navigationBarColor = if (white) 0xFFF2F2F6.toInt() else 0xFF06060A.toInt()
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (white) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0
     }
@@ -747,6 +838,8 @@ class MainActivity : Activity() {
         undoBar.background = Glass.panel(this, 22f, strong = true)
         applyStatusBar()
         render()
+        // The home-screen widget follows the theme too (light layout exists).
+        TaskWidget.updateAll(this)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -767,11 +860,13 @@ class MainActivity : Activity() {
             val results = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
             val spoken = results?.firstOrNull()
             if (!spoken.isNullOrBlank()) {
-                Store.addTaskFromParse(Parser.parse(spoken))
-                Store.save()
-                Sfx.add()
-                toast("Added from voice 🎙️")
-                view = "today"; sub = null; render()
+                // Land the words in the Ramble box for review instead of
+                // creating a task instantly — mis-heard speech can be fixed.
+                // Append to anything already typed rather than replacing it.
+                rambleText = if (rambleText.isBlank()) spoken else rambleText.trimEnd('\n') + "\n" + spoken
+                Sfx.tick()
+                toast("Review your words, then tap “Add all tasks” 🎙️")
+                sub = "ramble"; render()
             }
             return
         }
@@ -822,7 +917,7 @@ class MainActivity : Activity() {
                 if (f == null) { content.addView(emptyView("🔎", "Filter not found.")); return }
                 val list = Store.sortTasks(Store.state.tasks.filter { Filters.eval(Store.state, it, f.query) })
                 renderTaskList(list, "🔎", "No tasks match \"${f.query}\".")
-                val del = tv("Delete this filter", 15f, Glass.OVERDUE)
+                val del = tv("Delete this filter", 15f, Glass.overdue(this@MainActivity))
                 del.gravity = Gravity.CENTER
                 del.setPadding(dp(12f), dp(14f), dp(12f), dp(14f))
                 del.setOnClickListener {
@@ -837,7 +932,7 @@ class MainActivity : Activity() {
                 if (l == null) { content.addView(emptyView("🏷️", "Label not found.")); return }
                 val list = Store.sortTasks(Store.state.tasks.filter { it.labelIds.contains(l.id) })
                 renderTaskList(list, "🏷️", "No open tasks with @${l.name}.")
-                val del = tv("Delete this label", 15f, Glass.OVERDUE)
+                val del = tv("Delete this label", 15f, Glass.overdue(this@MainActivity))
                 del.gravity = Gravity.CENTER
                 del.setPadding(dp(12f), dp(14f), dp(12f), dp(14f))
                 del.setOnClickListener {
@@ -863,18 +958,32 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Day the activity last saw — onResume rolls the analytics over when
+     *  the date changes under a still-open app (see Db.rollover). */
+    private var lastSeenDay = ""
+    /** Text state for Search / Ramble / Assist lives in fields, not in the
+     *  views: render() rebuilds screens constantly, and render-local text
+     *  was silently wiped by every rebuild. */
+    private var searchQuery = ""
+    private var rambleText = ""
+    private var assistText = ""
+
     private fun renderSearch() {
-        val inputE = input("Search tasks & notes…")
+        val inputE = input("Search tasks & notes…", searchQuery)
         val results = LinearLayout(this); results.orientation = LinearLayout.VERTICAL
-        results.addView(emptyView("🔍", "Type to search across all your tasks."))
+        fun showResults() {
+            val q = searchQuery.trim().lowercase()
+            results.removeAllViews()
+            if (q.isEmpty()) { results.addView(emptyView("🔍", "Type to search across all your tasks.")); return }
+            val list = Store.sortTasks(Store.state.tasks.filter { (it.title + " " + it.notes).lowercase().contains(q) })
+            if (list.isEmpty()) results.addView(emptyView("🫥", "No tasks match \"$q\"."))
+            else list.forEach { results.addView(taskRow(it)) }
+        }
+        showResults()
         inputE.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(e: Editable?) {
-                val q = e?.toString()?.trim()?.lowercase() ?: ""
-                results.removeAllViews()
-                if (q.isEmpty()) { results.addView(emptyView("🔍", "Type to search across all your tasks.")); return }
-                val list = Store.sortTasks(Store.state.tasks.filter { (it.title + " " + it.notes).lowercase().contains(q) })
-                if (list.isEmpty()) results.addView(emptyView("🫥", "No tasks match \"$q\"."))
-                else list.forEach { results.addView(taskRow(it)) }
+                searchQuery = e?.toString() ?: ""
+                showResults()
             }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -882,6 +991,7 @@ class MainActivity : Activity() {
         content.addView(inputE)
         content.addView(results)
         inputE.requestFocus()
+        inputE.setSelection(inputE.text.length)
     }
 
     /* ---------------- sheets ---------------- */
@@ -923,11 +1033,18 @@ class MainActivity : Activity() {
         } catch (e: Exception) { /* visual only */ }
     }
 
+    /** Incremented on every showSheet so a stale exit animation from a
+     *  previous sheet can never tear down a newer one. */
+    private var sheetGen = 0
+    private var sheetClosing = false
+
     private fun showSheet(sheetContent: View) {
+        sheetGen++
+        sheetClosing = false
         sheetRoot.removeAllViews()
         val scrim = View(this)
-        scrim.setBackgroundColor(0xB3020208.toInt())
-        scrim.setOnClickListener { closeSheet() }
+        scrim.setBackgroundColor(if (Glass.isWhite(this)) 0x66020208 else 0xB3020208.toInt())
+        scrim.setOnClickListener { attemptCloseSheet() }
         sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         val panel = LinearLayout(this)
         panel.orientation = LinearLayout.VERTICAL
@@ -941,7 +1058,7 @@ class MainActivity : Activity() {
         val handle = View(this)
         val hg = android.graphics.drawable.GradientDrawable()
         hg.cornerRadius = dp(3f).toFloat()
-        hg.setColor(0x59FFFFFF)
+        hg.setColor(if (Glass.isWhite(this)) android.graphics.Color.argb(64, 20, 20, 35) else 0x59FFFFFF)
         handle.background = hg
         handle.layoutParams = LinearLayout.LayoutParams(dp(38f), dp(5f)).apply {
             gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(14f)
@@ -959,14 +1076,30 @@ class MainActivity : Activity() {
         if (undoWasVisible) undoBar.visibility = View.GONE
         setBackdropBlur(true)
         Sfx.open()
+        scrim.alpha = 0f
+        scrim.animate().alpha(1f).setDuration(250).start()
         panel.translationY = dp(60f).toFloat()
         panel.alpha = 0.4f
-        panel.animate().translationY(0f).alpha(1f).setDuration(380).start()
+        panel.animate().translationY(0f).alpha(1f).setDuration(420).setInterpolator(sheetEase).start()
     }
 
     private fun closeSheet() {
-        if (sheetRoot.visibility != View.VISIBLE) return
+        if (sheetRoot.visibility != View.VISIBLE || sheetClosing) return
+        // A closed sheet forgets its sub-navigation; the next sheet starts fresh.
+        sheetStack.clear()
         Sfx.close()
+        val scrim = sheetRoot.getChildAt(0)
+        val panel = sheetRoot.getChildAt(1)
+        if (scrim == null || panel == null) { finishCloseSheet(); return }
+        sheetClosing = true
+        val gen = sheetGen
+        scrim.animate().alpha(0f).setDuration(240).start()
+        panel.animate().translationY(dp(60f).toFloat()).alpha(0.4f).setDuration(240).setInterpolator(sheetEase)
+            .withEndAction { if (gen == sheetGen) finishCloseSheet() }.start()
+    }
+
+    private fun finishCloseSheet() {
+        sheetClosing = false
         sheetRoot.visibility = View.GONE
         sheetRoot.removeAllViews()
         fabBtn.visibility = View.VISIBLE
@@ -974,6 +1107,49 @@ class MainActivity : Activity() {
         if (undoWasVisible) { undoBar.visibility = View.VISIBLE; undoWasVisible = false }
         setBackdropBlur(false)
         editingId = null
+        editorSnapshot = null
+        editorDirtyCheck = null
+    }
+
+    /** Open a sub-sheet, remembering how to get back to `backTo`. */
+    private fun pushSheet(sheetContent: View, backTo: () -> View) {
+        sheetStack.addLast(backTo)
+        showSheet(sheetContent)
+    }
+
+    /** Step back one sheet level. Returns true if a previous sheet was shown. */
+    private fun popSheet(): Boolean {
+        if (sheetStack.isEmpty()) return false
+        showSheet(sheetStack.removeLast()())
+        return true
+    }
+
+    /** Return to a parent sheet, dropping the stacked entry that led here
+     *  (used by Done/Save buttons inside sub-sheets). */
+    private fun returnToSheet(sheetContent: View) {
+        if (sheetStack.isNotEmpty()) sheetStack.removeLast()
+        showSheet(sheetContent)
+    }
+
+    /** Return to the Quick Add root, dropping any stacked sub-sheets. */
+    private fun returnToQuickAdd() {
+        sheetStack.clear()
+        showSheet(buildQuickAdd())
+    }
+
+    /** Back / scrim dismissal. If the editor is open with unsaved edits,
+     *  ask first instead of silently discarding them. */
+    private fun attemptCloseSheet() {
+        if (editingId != null && editorDirtyCheck?.invoke() == true) {
+            AlertDialog.Builder(this)
+                .setTitle("Discard changes?")
+                .setMessage("You have unsaved edits to this task.")
+                .setPositiveButton("Discard") { _, _ -> closeSheet() }
+                .setNegativeButton("Keep editing", null)
+                .show()
+            return
+        }
+        closeSheet()
     }
 
     private fun promptText(title: String, cb: (String) -> Unit) {
@@ -1007,11 +1183,22 @@ class MainActivity : Activity() {
     private var qaLocLng: Double? = null
     private var qaCursor: java.util.Calendar = java.util.Calendar.getInstance()
     private var qaUpdating = false
+    /** True when the currently open Quick Add sheet is showing a draft
+     *  resumed from a previous open (Batch 9) — drives the "Discard draft"
+     *  row; cleared by clearQaDraft(). */
+    private var qaDraftResumed = false
 
-    private fun openQuickAdd(presetDate: String?) {
+    /** True when the Quick Add fields hold an unfinished draft (Batch 9). */
+    private fun qaHasDraft(): Boolean =
+        qaText.isNotBlank() || qaDate != null || qaTime != null || qaRecSet ||
+        qaPriority != null || qaProjectSet || qaRemSet || qaLabelIds.isNotEmpty() ||
+        qaNotes.isNotBlank() || qaLocLat != null
+
+    /** Reset every Quick Add field to a blank draft (Batch 9). */
+    private fun clearQaDraft() {
         qaText = ""
-        qaPresetDate = presetDate
-        qaDate = presetDate
+        qaPresetDate = null
+        qaDate = null
         qaTime = null
         qaRecurrence = null; qaRecSet = false
         qaPriority = null
@@ -1021,6 +1208,23 @@ class MainActivity : Activity() {
         qaNotes = ""; qaShowNotes = false
         qaLocLat = null; qaLocLng = null
         qaCursor = java.util.Calendar.getInstance()
+        qaDraftResumed = false
+    }
+
+    private fun openQuickAdd(presetDate: String?) {
+        // Batch 9 — a half-typed draft survives closing the sheet: a FAB tap
+        // resumes it instead of silently discarding it (Batch 7 follow-up).
+        // An explicit preset date (Calendar "Add task on this day") always
+        // starts fresh, since it carries its own intent.
+        if (presetDate != null) {
+            clearQaDraft()
+            qaPresetDate = presetDate
+            qaDate = presetDate
+        } else if (qaHasDraft()) {
+            qaDraftResumed = true
+        } else {
+            clearQaDraft()
+        }
         showSheet(buildQuickAdd())
     }
 
@@ -1037,7 +1241,7 @@ class MainActivity : Activity() {
     private fun qaPill(label: String, on: Boolean, click: () -> Unit): TextView {
         val b = tv(label, 13f, Glass.text(this@MainActivity), on)
         b.background = Glass.sheetChip(this, on)
-        b.setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+        b.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
         b.setOnClickListener { click() }
         b.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(7f) }
         return b
@@ -1058,14 +1262,15 @@ class MainActivity : Activity() {
         send.gravity = Gravity.CENTER
         send.background = Glass.accentGradient(this, 999f)
         send.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
+        send.contentDescription = "Add task"
         send.setOnClickListener { qaSubmit(inp, notesIn) }
         inputRow.addView(send)
         col.addView(inputRow)
-        val chips = tv("", 12.5f, Glass.muted(this@MainActivity))
+        val chips = tv("", 13f, Glass.muted(this@MainActivity))
         chips.layoutParams = lp(b = dp(4f))
         col.addView(chips)
         val popupBox = LinearLayout(this); popupBox.orientation = LinearLayout.VERTICAL
-        popupBox.background = Glass.panel(this, 18f, strong = true)
+        popupBox.background = Glass.panel(this, 20f, strong = true)
         popupBox.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
         popupBox.layoutParams = lp(b = dp(8f))
         popupBox.visibility = View.GONE
@@ -1097,23 +1302,33 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this); bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER_VERTICAL
         bar.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        bar.addView(qaPill("＋", false) { showSheet(buildQaPlusMenu()) })
+        bar.addView(qaPill("＋", false) { pushSheet(buildQaPlusMenu()) { buildQuickAdd() } })
         val dateLbl = when (qaDate) {
             null -> "📅 Date"
             Dates.today() -> "📅 Today"
             Dates.addDays(Dates.today(), 1) -> "📅 Tomorrow"
             else -> "📅 " + Dates.fmtDay(qaDate!!)
         }
-        bar.addView(qaPill(dateLbl, qaDate != null) { showSheet(buildQaDatePicker()) })
-        bar.addView(qaPill(if (qaPriority != null) "⚑ P" + qaPriority else "⚑ Priority", qaPriority != null) { showSheet(buildQaPriority()) })
-        bar.addView(qaPill("⏰ Reminders", qaRemSet) { showSheet(buildQaReminders()) })
+        bar.addView(qaPill(dateLbl, qaDate != null) { pushSheet(buildQaDatePicker()) { buildQuickAdd() } })
+        bar.addView(qaPill(if (qaPriority != null) "⚑ P" + qaPriority else "⚑ Priority", qaPriority != null) { pushSheet(buildQaPriority()) { buildQuickAdd() } })
+        bar.addView(qaPill("⏰ Reminders", qaRemSet) { pushSheet(buildQaReminders()) { buildQuickAdd() } })
         val projName = if (qaProjectSet) qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox" else "Inbox"
-        bar.addView(qaPill("▣ $projName", qaProjectSet) { showSheet(buildQaProjects()) })
+        bar.addView(qaPill("▣ $projName", qaProjectSet) { pushSheet(buildQaProjects()) { buildQuickAdd() } })
         val barScroll = HorizontalScrollView(this)
         barScroll.isHorizontalScrollBarEnabled = false
         barScroll.layoutParams = lp(t = dp(6f))
         barScroll.addView(bar)
         col.addView(barScroll)
+        // Batch 9 — when a draft was resumed, offer a way out: discard it
+        // and start blank. Hidden on a fresh sheet.
+        if (qaDraftResumed) {
+            val discard = tv("✕  Discard draft", 13f, Glass.muted(this@MainActivity))
+            discard.gravity = Gravity.CENTER
+            discard.layoutParams = lp(t = dp(10f))
+            discard.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+            discard.setOnClickListener { Sfx.tick(); clearQaDraft(); showSheet(buildQuickAdd()) }
+            col.addView(discard)
+        }
         col.post { inp.requestFocus() }
         return col
     }
@@ -1128,7 +1343,7 @@ class MainActivity : Activity() {
                 if (matches.isEmpty()) { popupBox.visibility = View.GONE; return }
                 popupBox.addView(tv("MY PROJECTS", 11f, Glass.muted(this@MainActivity), true))
                 matches.forEach { p ->
-                    val row = tv("#  " + p.name, 14.5f)
+                    val row = tv("#  " + p.name, 15f)
                     row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
                     row.setOnClickListener {
                         qaProjectSet = true; qaProjectId = p.id
@@ -1147,7 +1362,7 @@ class MainActivity : Activity() {
                 popupBox.addView(tv("PRIORITY", 11f, Glass.muted(this@MainActivity), true))
                 val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
                 flags.forEach { (n, color) ->
-                    val row = tv("⚑  Priority $n", 14.5f, color)
+                    val row = tv("⚑  Priority $n", 15f, color)
                     row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
                     row.setOnClickListener {
                         qaPriority = n
@@ -1188,6 +1403,8 @@ class MainActivity : Activity() {
         Reminders.sync(this, t)
         Reminders.syncGeo(this, t)
         Store.save()
+        // Batch 9 — the draft was used up; the next FAB tap starts blank.
+        clearQaDraft()
         Sfx.add(); closeSheet(); render(); toast("Task added ✅")
     }
 
@@ -1201,7 +1418,7 @@ class MainActivity : Activity() {
         row.addView(ic)
         val tt = tv(title, 15f); tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         row.addView(tt)
-        if (tag != null) row.addView(tv(tag, 11f, Glass.GOLD, true))
+        if (tag != null) row.addView(tv(tag, 11f, Glass.gold(this@MainActivity), true))
         row.setOnClickListener { click() }
         return row
     }
@@ -1209,11 +1426,11 @@ class MainActivity : Activity() {
     private fun buildQaPlusMenu(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
         col.addView(qaMenuRow("✂️", "Extract tasks…", null) { closeSheet(); sub = "assist"; render() })
-        col.addView(qaMenuRow("☰", "Description", null) { qaShowNotes = true; showSheet(buildQuickAdd()) })
-        col.addView(qaMenuRow("🏷️", "Labels", null) { showSheet(buildQaLabels()) })
-        col.addView(qaMenuRow("🎯", "Deadline", "PRO") { showSheet(buildQaDatePicker()) })
+        col.addView(qaMenuRow("☰", "Description", null) { qaShowNotes = true; returnToQuickAdd() })
+        col.addView(qaMenuRow("🏷️", "Labels", null) { pushSheet(buildQaLabels()) { buildQaPlusMenu() } })
+        col.addView(qaMenuRow("🎯", "Deadline", "PRO") { pushSheet(buildQaDatePicker()) { buildQaPlusMenu() } })
         col.addView(qaMenuRow("📍", "Location", "PRO") { captureLocationQa() })
-        val back = ghostBtn("← Back") { showSheet(buildQuickAdd()) }
+        val back = ghostBtn("← Back") { returnToQuickAdd() }
         back.layoutParams = lp(t = dp(10f))
         col.addView(back)
         return col
@@ -1244,7 +1461,7 @@ class MainActivity : Activity() {
         }
         add.layoutParams = lp(t = dp(8f), b = dp(8f))
         col.addView(add)
-        val done = accentBtn("Done") { showSheet(buildQuickAdd()) }
+        val done = accentBtn("Done") { returnToQuickAdd() }
         col.addView(done)
         return col
     }
@@ -1256,11 +1473,14 @@ class MainActivity : Activity() {
         col.addView(tv("Priority", 16f, Glass.text(this@MainActivity), true))
         val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
         flags.forEach { (n, color) ->
-            val row = tv("⚑  Priority $n" + if (qaPriority == n) "  ✓" else "", 15.5f, color)
+            val row = tv("⚑  Priority $n" + if (qaPriority == n) "  ✓" else "", 15f, color)
             row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
-            row.setOnClickListener { qaPriority = n; Sfx.tick(); showSheet(buildQuickAdd()) }
+            row.setOnClickListener { qaPriority = n; Sfx.tick(); returnToQuickAdd() }
             col.addView(row)
         }
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
@@ -1271,12 +1491,12 @@ class MainActivity : Activity() {
         col.addView(tv("My Projects", 16f, Glass.text(this@MainActivity), true))
         val inboxRow = tv("▣  Inbox" + if (qaProjectSet && qaProjectId == null) "  ✓" else "", 15f)
         inboxRow.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
-        inboxRow.setOnClickListener { qaProjectSet = true; qaProjectId = null; showSheet(buildQuickAdd()) }
+        inboxRow.setOnClickListener { qaProjectSet = true; qaProjectId = null; returnToQuickAdd() }
         col.addView(inboxRow)
         Store.state.projects.forEach { p ->
             val row = tv("#  " + p.name + if (qaProjectSet && qaProjectId == p.id) "  ✓" else "", 15f)
             row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
-            row.setOnClickListener { qaProjectSet = true; qaProjectId = p.id; showSheet(buildQuickAdd()) }
+            row.setOnClickListener { qaProjectSet = true; qaProjectId = p.id; returnToQuickAdd() }
             col.addView(row)
         }
         val add = ghostBtn("＋ New project") {
@@ -1284,22 +1504,45 @@ class MainActivity : Activity() {
                 val p = Store.projByName(name)
                 qaProjectSet = true; qaProjectId = p.id
                 Store.save()
-                showSheet(buildQuickAdd())
+                returnToQuickAdd()
             }
         }
         add.layoutParams = lp(t = dp(8f))
         col.addView(add)
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
     /* ----- Quick Add: reminders ----- */
+
+    /** Tappable hint shown when exact alarms are off (Android 12+): reminders fall
+     *  back to inexact alarms and may arrive late. Returns null when exact alarms
+     *  are allowed — so the hint hides itself once the user grants the permission.
+     *  No new permission is needed; this only opens the system settings screen. */
+    private fun exactAlarmHint(): View? {
+        if (AlarmHelper.exactAlarmsAllowed(this)) return null
+        val hint = tv("⏰ Exact alarms are off — reminders may arrive late. Tap to allow on-time reminders.", 13f, Glass.overdue(this@MainActivity))
+        hint.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
+        hint.setOnClickListener {
+            try {
+                val i = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                i.data = Uri.parse("package:" + packageName)
+                startActivity(i)
+            } catch (e: Exception) {
+                toast("Open Settings → Apps → GhostBlade Task → Alarms & reminders to allow exact alarms")
+            }
+        }
+        return hint
+    }
 
     private fun buildQaReminders(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
         col.addView(tv("Reminders", 16f, Glass.text(this@MainActivity), true))
         val parsed = Parser.parse(qaText)
         if (qaDate == null && parsed.dueDate == null) {
-            val hint = tv("Add a day and time to the task first — pick a date, then choose a reminder.", 13f, Glass.OVERDUE)
+            val hint = tv("Add a day and time to the task first — pick a date, then choose a reminder.", 13f, Glass.overdue(this@MainActivity))
             hint.layoutParams = lp(t = dp(6f), b = dp(6f))
             col.addView(hint)
         }
@@ -1311,9 +1554,13 @@ class MainActivity : Activity() {
             val on = qaRemSet && qaReminder == v
             val row = tv("⏰  $lbl" + if (on) "  ✓" else "", 15f)
             row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
-            row.setOnClickListener { qaRemSet = true; qaReminder = v; Sfx.tick(); showSheet(buildQuickAdd()) }
+            row.setOnClickListener { qaRemSet = true; qaReminder = v; Sfx.tick(); returnToQuickAdd() }
             col.addView(row)
         }
+        exactAlarmHint()?.let { col.addView(it) }
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
@@ -1340,7 +1587,7 @@ class MainActivity : Activity() {
         quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
         quickRow("⏭️", "Next week", Dates.addDays(Dates.today(), 7))
         if (qaDate != null) {
-            val clr = tv("✕  Clear date", 14.5f, Glass.OVERDUE)
+            val clr = tv("✕  Clear date", 15f, Glass.overdue(this@MainActivity))
             clr.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
             clr.setOnClickListener { qaDate = null; qaTime = null; showSheet(buildQaDatePicker()) }
             col.addView(clr)
@@ -1352,7 +1599,7 @@ class MainActivity : Activity() {
         head.layoutParams = lp(t = dp(10f), b = dp(4f))
         val prev = tv("‹", 22f, Glass.text(this@MainActivity), true); prev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
         prev.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, -1); showSheet(buildQaDatePicker()) }
-        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 14.5f, Glass.text(this@MainActivity), true)
+        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 15f, Glass.text(this@MainActivity), true)
         mt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); mt.gravity = Gravity.CENTER
         val next = tv("›", 22f, Glass.text(this@MainActivity), true); next.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
         next.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, 1); showSheet(buildQaDatePicker()) }
@@ -1375,14 +1622,14 @@ class MainActivity : Activity() {
             if (day > dim) break
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             for (dowI in 0 until 7) {
-                val cell = tv("", 13.5f); cell.gravity = Gravity.CENTER
-                cell.layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f)
+                val cell = tv("", 13f); cell.gravity = Gravity.CENTER
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f)
                 if (!(week == 0 && dowI < startDow) && day <= dim) {
                     val ds = y.toString() + "-" + (mo + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
                     cell.text = day.toString()
                     when {
                         ds == qaDate -> { cell.background = Glass.accentGradient(this, 999f); cell.setTextColor(0xFFFFFFFF.toInt()) }
-                        ds == Dates.today() -> cell.setTextColor(Accents.base(this))
+                        ds == Dates.today() -> cell.setTextColor(if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.base(this@MainActivity))
                     }
                     val dd = ds
                     cell.setOnClickListener { qaDate = dd; Sfx.tick(); showSheet(buildQaDatePicker()) }
@@ -1393,7 +1640,7 @@ class MainActivity : Activity() {
             col.addView(rowL)
         }
         // time + repeat rows
-        val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { showSheet(buildQaTimePicker()) }
+        val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { pushSheet(buildQaTimePicker()) { buildQaDatePicker() } }
         col.addView(timeRow)
         val recLbl = when {
             !qaRecSet || qaRecurrence == null -> "Repeat"
@@ -1402,10 +1649,13 @@ class MainActivity : Activity() {
             qaRecurrence == "monthly" -> "Repeat · Monthly"
             else -> "Repeat · " + qaRecurrence
         }
-        col.addView(qaMenuRow("🔁", recLbl, null) { showSheet(buildQaRepeat()) })
-        val save = accentBtn("Save") { showSheet(buildQuickAdd()) }
+        col.addView(qaMenuRow("🔁", recLbl, null) { pushSheet(buildQaRepeat()) { buildQaDatePicker() } })
+        val save = accentBtn("Save") { returnToQuickAdd() }
         save.layoutParams = lp(t = dp(10f))
         col.addView(save)
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
@@ -1416,7 +1666,7 @@ class MainActivity : Activity() {
         col.addView(inp)
         val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
         listOf("07:00", "09:00", "12:00", "18:00", "21:00").forEach { tm ->
-            val ch = chipBtn(tm, qaTime == tm) { qaTime = tm; showSheet(buildQaDatePicker()) }
+            val ch = chipBtn(tm, qaTime == tm) { qaTime = tm; returnToSheet(buildQaDatePicker()) }
             ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
             chipsRow.addView(ch)
         }
@@ -1427,14 +1677,17 @@ class MainActivity : Activity() {
                 val parts = v.split(":")
                 parts[0].padStart(2, '0') + ":" + parts[1]
             } else qaTime
-            showSheet(buildQaDatePicker())
+            returnToSheet(buildQaDatePicker())
         }
         save.layoutParams = lp(t = dp(10f), b = dp(6f))
         col.addView(save)
         if (qaTime != null) {
-            val clr = ghostBtn("Clear time") { qaTime = null; showSheet(buildQaDatePicker()) }
+            val clr = ghostBtn("Clear time") { qaTime = null; returnToSheet(buildQaDatePicker()) }
             col.addView(clr)
         }
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToSheet(buildQaDatePicker()) }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
@@ -1457,10 +1710,13 @@ class MainActivity : Activity() {
                     qaDate = Dates.nextWeekday(v.substringAfter(':').toInt())
                 }
                 Sfx.tick()
-                showSheet(buildQaDatePicker())
+                returnToSheet(buildQaDatePicker())
             }
             col.addView(row)
         }
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToSheet(buildQaDatePicker()) }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
         return col
     }
 
@@ -1472,16 +1728,22 @@ class MainActivity : Activity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 77)
             toast("Allow location permission, then tap again")
-            showSheet(buildQuickAdd())
+            returnToQuickAdd()
             return
         }
         val lm = getSystemService(LOCATION_SERVICE) as? LocationManager
-        if (lm == null) { toast("Location unavailable"); showSheet(buildQuickAdd()); return }
+        if (lm == null) { toast("Location unavailable"); returnToQuickAdd(); return }
         toast("Getting your location…")
+        // One-shot: the same listener is registered with both providers,
+        // so without this the first fix would attach the location twice
+        // (double toast + double sheet rebuild).
+        var done = false
         fun apply(lat: Double, lng: Double) {
+            if (done) return
+            done = true
             qaLocLat = lat; qaLocLng = lng
             toast("Location attached 📍")
-            showSheet(buildQuickAdd())
+            returnToQuickAdd()
         }
         try {
             var best: Location? = null
@@ -1495,7 +1757,11 @@ class MainActivity : Activity() {
                 return
             }
             val listener = object : LocationListener {
-                override fun onLocationChanged(l: Location) = apply(l.latitude, l.longitude)
+                override fun onLocationChanged(l: Location) {
+                    if (done) return
+                    try { lm.removeUpdates(this) } catch (e: Exception) {}
+                    apply(l.latitude, l.longitude)
+                }
                 override fun onStatusChanged(p: String?, s: Int, bundle: Bundle?) {}
                 override fun onProviderEnabled(p: String) {}
                 override fun onProviderDisabled(p: String) {}
@@ -1503,10 +1769,10 @@ class MainActivity : Activity() {
             var any = false
             try { lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper()); any = true } catch (e: Exception) {}
             try { lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper()); any = true } catch (e: Exception) {}
-            if (!any) { toast("Could not get location — check GPS"); showSheet(buildQuickAdd()) }
+            if (!any) { toast("Could not get location — check GPS"); returnToQuickAdd() }
         } catch (e: SecurityException) {
             toast("Location permission needed")
-            showSheet(buildQuickAdd())
+            returnToQuickAdd()
         }
     }
 
@@ -1515,6 +1781,9 @@ class MainActivity : Activity() {
     private fun openEditor(id: String) {
         val t = Store.byId(id) ?: return
         editingId = id
+        // Snapshot the last saved state — the discard guard compares the
+        // editor's fields against this, not against the live (stash-mutated) task.
+        editorSnapshot = t.copy()
         showSheet(buildEditor(t))
     }
 
@@ -1559,6 +1828,7 @@ class MainActivity : Activity() {
         val remValues = listOf<Int?>(null, 0, 10, 30, 60, 1440)
         col.addView(label("Reminder (fires even if app is closed)"))
         val edRem = spinner(remLabels, remValues.indexOf(t.reminderOffsetMin).coerceAtLeast(0)); col.addView(edRem)
+        exactAlarmHint()?.let { col.addView(it) }
 
         // Copy in-progress field edits into the task before any action that
         // rebuilds this sheet (subtasks, location), so typed text isn't lost.
@@ -1572,6 +1842,27 @@ class MainActivity : Activity() {
             t.projectId = projIds[edProj.selectedItemPosition]
             t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
             t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
+            // Stash+save flows persist the fields, so the discard guard's
+            // snapshot must track the last saved state too.
+            editorSnapshot = t.copy()
+        }
+
+        // Discard guard: true when any field differs from the last saved
+        // state. Spinner values are compared against what the spinner
+        // actually displays for the snapshot (an unrecognised imported value
+        // falls back to the first option, so it must not count as an edit).
+        editorDirtyCheck = {
+            val s = editorSnapshot
+            if (s == null) false else
+                edTitle.text.toString().trim().ifEmpty { s.title } != s.title ||
+                edNotes.text.toString() != s.notes ||
+                edDate.text.toString().trim().ifEmpty { null } != s.dueDate ||
+                edTime.text.toString().trim().ifEmpty { null } != s.dueTime ||
+                recValues[edRec.selectedItemPosition] != recValues[recValues.indexOf(s.recurrence).coerceAtLeast(0)] ||
+                edPri.selectedItemPosition + 1 != s.priority.coerceIn(1, 4) ||
+                projIds[edProj.selectedItemPosition] != projIds[projIds.indexOf(s.projectId).coerceAtLeast(0)] ||
+                edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 } != s.durationMin ||
+                remValues[edRem.selectedItemPosition] != remValues[remValues.indexOf(s.reminderOffsetMin).coerceAtLeast(0)]
         }
 
         col.addView(label("Location reminder"))
@@ -1588,7 +1879,7 @@ class MainActivity : Activity() {
         } else {
             val setBtn = ghostBtn("📍 Remind me at this place") { stash(); captureLocation(t) }
             col.addView(setBtn)
-            col.addView(tv("Stand at the place (home, office, gym), tap the button — the app remembers it and reminds you when you arrive.", 12.5f, Glass.muted(this@MainActivity)))
+            col.addView(tv("Stand at the place (home, office, gym), tap the button — the app remembers it and reminds you when you arrive.", 13f, Glass.muted(this@MainActivity)))
         }
 
         col.addView(dayGroup("SUBTASKS"))
@@ -1605,7 +1896,7 @@ class MainActivity : Activity() {
             box.layoutParams = LinearLayout.LayoutParams(dp(21f), dp(21f))
             box.setOnClickListener { stash(); st.done = !st.done; Sfx.tick(); Store.save(); showSheet(buildEditor(t)) }
             row.addView(box)
-            val stT = tv(st.title, 14.5f, if (st.done) Glass.muted(this@MainActivity) else Glass.text(this@MainActivity))
+            val stT = tv(st.title, 15f, if (st.done) Glass.muted(this@MainActivity) else Glass.text(this@MainActivity))
             if (st.done) stT.paintFlags = stT.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             stT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(9f) }
             row.addView(stT)
@@ -1656,43 +1947,52 @@ class MainActivity : Activity() {
             Sfx.tick(); closeSheet(); render(); toast("Saved ✅")
         }
         col.addView(save)
-        val del = tv("Delete task", 15f, Glass.OVERDUE)
+        val del = tv("Delete task", 15f, Glass.overdue(this@MainActivity))
         del.gravity = Gravity.CENTER
         del.setPadding(dp(12f), dp(14f), dp(12f), dp(6f))
         del.setOnClickListener {
             Sfx.del()
+            // Capture the position BEFORE deleting — afterwards the task is
+            // gone and indexOfFirst can only ever return -1.
+            val idx = Store.state.tasks.indexOfFirst { it.id == t.id }
             val removed = Store.deleteTask(t.id)
             closeSheet(); render()
-            if (removed != null) {
-                val idx = Store.state.tasks.indexOfFirst { it.id == t.id }
-                showUndo(removed, idx)
-            }
+            if (removed != null) showUndo(removed, idx)
         }
         col.addView(del)
         return col
     }
 
-    private fun showUndo(task: TaskItem, @Suppress("UNUSED_PARAMETER") ignoredIndex: Int) {
-        lastDeleted = task to 0
+    private fun showUndo(task: TaskItem, index: Int) {
+        lastDeleted = task to index
         undoBar.removeAllViews()
-        val lbl = tv("Deleted \"${task.title}\"", 13.5f)
+        val lbl = tv("Deleted \"${task.title}\"", 13f)
+        lbl.maxLines = 1
+        lbl.ellipsize = android.text.TextUtils.TruncateAt.END
+        lbl.maxWidth = dp(220f)
         lbl.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
         undoBar.addView(lbl)
-        val btn = tv("UNDO", 14f, Glass.GOLD, true)
-        btn.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        val btn = tv("UNDO", 15f, Glass.gold(this@MainActivity), true)
+        btn.setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
         btn.setOnClickListener {
-            val (task2, _) = lastDeleted ?: return@setOnClickListener
-            Store.state.tasks.add(task2)
+            val (task2, idx2) = lastDeleted ?: return@setOnClickListener
+            // Restore at the original position, not the end of the list.
+            Store.state.tasks.add(idx2.coerceIn(0, Store.state.tasks.size), task2)
             Reminders.sync(this, task2); Reminders.syncGeo(this, task2)
             lastDeleted = null
             undoBar.visibility = View.GONE
             Store.save(); render(); toast("Restored ↩️")
         }
         undoBar.addView(btn)
-        undoBar.visibility = View.VISIBLE
         undoHide?.let { handler.removeCallbacks(it) }
         undoHide = Runnable { undoBar.visibility = View.GONE; lastDeleted = null }
-        handler.postDelayed(undoHide!!, 5000)
+        // If a sheet is still sliding away (the editor-delete path), let it
+        // clear first so the bar doesn't flash underneath the sheet.
+        val showDelay = if (sheetRoot.visibility == View.VISIBLE) 280L else 0L
+        handler.postDelayed({
+            undoBar.visibility = View.VISIBLE
+            handler.postDelayed(undoHide!!, 5000)
+        }, showDelay)
     }
 
     private fun breakdownFor(title: String): List<String> {
@@ -1739,7 +2039,16 @@ class MainActivity : Activity() {
         val fill = View(this)
         fill.background = Glass.accentGradient(this, 3f)
         wrap.addView(fill, FrameLayout.LayoutParams(0, dp(7f)))
-        wrap.post { fill.layoutParams = FrameLayout.LayoutParams((wrap.width * pct).toInt(), dp(7f)) }
+        // Batch 9 (P2-10) — sweep the fill in over 300ms instead of snapping.
+        wrap.post {
+            val target = (wrap.width * pct).toInt()
+            ValueAnimator.ofInt(0, target).apply {
+                duration = 300
+                interpolator = sheetEase
+                addUpdateListener { fill.layoutParams = FrameLayout.LayoutParams(it.animatedValue as Int, dp(7f)) }
+                start()
+            }
+        }
         return wrap
     }
 
@@ -1762,37 +2071,37 @@ class MainActivity : Activity() {
 
         val calCard = card()
         val dow = LinearLayout(this); dow.orientation = LinearLayout.HORIZONTAL
-        listOf("S", "M", "T", "W", "T", "F", "S").forEach { d ->
-            val t = tv(d, 11.5f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
+        listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
+            val t = tv(d, 11f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
             t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             dow.addView(t)
         }
         calCard.addView(dow)
         val first = java.util.Calendar.getInstance()
         first.set(year, month, 1, 0, 0, 0)
-        val startDow = Dates.jsDayOfWeek(first)
+        val startDow = (Dates.jsDayOfWeek(first) + 6) % 7
         val daysInMonth = first.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
         var day = 1
         for (week in 0 until 6) {
             if (day > daysInMonth) break
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             for (dowI in 0 until 7) {
-                val cell = tv("", 13.5f); cell.gravity = Gravity.CENTER
-                cell.layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f)
+                val cell = tv("", 13f); cell.gravity = Gravity.CENTER
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(44f), 1f)
                 if (week == 0 && dowI < startDow || day > daysInMonth) {
                     // blank cell
                 } else {
                     val ds = year.toString() + "-" + (month + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
                     val n = Store.state.tasks.count { it.dueDate == ds }
                     cell.text = day.toString() + if (n > 0) "\n" + "•".repeat(minOf(n, 3)) else ""
-                    cell.textSize = 13.5f
-                    cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.OVERDUE else Glass.text(this@MainActivity))
+                    cell.textSize = 13f
+                    cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.overdue(this@MainActivity) else Glass.text(this@MainActivity))
                     when {
                         ds == selDay -> cell.background = Glass.chip(this, true)
                         ds == Dates.today() -> {
                             val g = android.graphics.drawable.GradientDrawable()
                             g.cornerRadius = dp(12f).toFloat()
-                            g.setStroke(dp(1.5f), Accents.base(this))
+                            g.setStroke(dp(1.5f), if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.base(this@MainActivity))
                             cell.background = g
                         }
                     }
@@ -1863,6 +2172,7 @@ class MainActivity : Activity() {
         ringWrap.layoutParams = lp(t = dp(16f), b = dp(6f))
         val ring = FocusRing(this)
         ring.ringColor = Accents.base(this)
+        ring.trackColor = if (Glass.isWhite(this)) android.graphics.Color.argb(28, 20, 20, 35) else android.graphics.Color.argb(30, 255, 255, 255)
         ring.fraction = if (focusTotal > 0) focusLeft.toFloat() / focusTotal else 0f
         ring.layoutParams = FrameLayout.LayoutParams(dp(190f), dp(190f)).apply { gravity = Gravity.CENTER }
         focusRing = ring
@@ -1873,7 +2183,7 @@ class MainActivity : Activity() {
         focusTimeText = timeT
         ringWrap.addView(timeT)
         c.addView(ringWrap)
-        val stateT = tv(if (focusRunning) "Focusing…" else "Ready when you are", 13.5f, Glass.muted(this@MainActivity))
+        val stateT = tv(if (focusRunning) "Focusing…" else "Ready when you are", 13f, Glass.muted(this@MainActivity))
         stateT.gravity = Gravity.CENTER
         focusStateText = stateT
         c.addView(stateT)
@@ -1892,7 +2202,7 @@ class MainActivity : Activity() {
         btnRow.addView(main); btnRow.addView(stop)
         c.addView(btnRow)
         content.addView(c)
-        content.addView(tv("Tip: set a task duration in its editor and the timer picks it up automatically. Leaving this screen pauses the timer.", 12.5f, Glass.muted(this@MainActivity)))
+        content.addView(tv("Tip: set a task duration in its editor and the timer picks it up automatically. Leaving this screen pauses the timer.", 13f, Glass.muted(this@MainActivity)))
     }
 
     private fun startFocus() {
@@ -1940,15 +2250,15 @@ class MainActivity : Activity() {
 
     private fun statCard(big: String, smallTxt: String): LinearLayout {
         val c = card(13)
-        c.addView(tv(big, 21f, Glass.text(this@MainActivity), true))
-        c.addView(tv(smallTxt, 12f, Glass.muted(this@MainActivity)))
+        c.addView(tv(big, 22f, Glass.text(this@MainActivity), true))
+        c.addView(tv(smallTxt, 13f, Glass.muted(this@MainActivity)))
         return c
     }
 
     private fun renderStats() {
         val grid1 = LinearLayout(this); grid1.orientation = LinearLayout.HORIZONTAL
         val sc1 = statCard("🔥 " + Store.currentStreak(), "day streak")
-        sc1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        sc1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
         val sc2 = statCard(Store.completionsOn(Dates.today()).toString(), "done today")
         sc2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         grid1.addView(sc1); grid1.addView(sc2)
@@ -1956,14 +2266,14 @@ class MainActivity : Activity() {
         val last7 = (6 downTo 0).sumOf { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
         val grid2 = LinearLayout(this); grid2.orientation = LinearLayout.HORIZONTAL
         val sc3 = statCard(last7.toString(), "done in 7 days")
-        sc3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        sc3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
         val sc4 = statCard(Store.state.completions.size.toString(), "all-time done")
         sc4.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         grid2.addView(sc3); grid2.addView(sc4)
         content.addView(grid2)
 
         val chart = card()
-        chart.addView(tv("Last 7 days", 14.5f, Glass.text(this@MainActivity), true))
+        chart.addView(tv("Last 7 days", 15f, Glass.text(this@MainActivity), true))
         val counts = (6 downTo 0).map { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
         val max = Math.max(1, counts.maxOrNull() ?: 1)
         val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
@@ -1974,7 +2284,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.gravity = Gravity.CENTER_HORIZONTAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(n.toString(), 11.5f, Glass.muted(this@MainActivity), true))
+            colL.addView(tv(n.toString(), 11f, Glass.muted(this@MainActivity), true))
             val bar = View(this)
             val h = dp(8f) + (dp(74f) * n / max)
             bar.layoutParams = LinearLayout.LayoutParams(dp(20f), h).apply { topMargin = dp(4f); bottomMargin = dp(4f) }
@@ -1993,7 +2303,7 @@ class MainActivity : Activity() {
         content.addView(chart)
 
         val per = card()
-        per.addView(tv("Completions by project", 14.5f, Glass.text(this@MainActivity), true))
+        per.addView(tv("Completions by project", 15f, Glass.text(this@MainActivity), true))
         val byProj = Store.state.projects.map { p ->
             p.name to Store.state.completions.count { it.projectId == p.id }
         }.filter { it.second > 0 }.sortedByDescending { it.second }
@@ -2001,8 +2311,8 @@ class MainActivity : Activity() {
         byProj.forEach { (name, n) ->
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             rowL.layoutParams = lp(t = dp(6f))
-            val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.text(this@MainActivity), true))
+            val nm = tv("# $name", 15f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            rowL.addView(nm); rowL.addView(tv(n.toString(), 15f, Glass.text(this@MainActivity), true))
             per.addView(rowL)
         }
         content.addView(per)
@@ -2033,21 +2343,21 @@ class MainActivity : Activity() {
 
         val g1 = LinearLayout(this); g1.orientation = LinearLayout.HORIZONTAL
         val c1 = statCard(if (rate != null) "$rate%" else "—", "completion rate")
-        c1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        c1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
         val c2 = statCard(done.size.toString(), "tasks done")
         c2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         g1.addView(c1); g1.addView(c2)
         content.addView(g1)
         val g2 = LinearLayout(this); g2.orientation = LinearLayout.HORIZONTAL
         val c3 = statCard(missed.size.toString(), "tasks missed")
-        c3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        c3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
         val c4 = statCard("$streakRate%", "streak rate · $active/$perfRange days active")
         c4.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         g2.addView(c3); g2.addView(c4)
         content.addView(g2)
         val g3 = LinearLayout(this); g3.orientation = LinearLayout.HORIZONTAL
         val c5 = statCard("🔥 " + Store.currentStreak(), "current streak (days)")
-        c5.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(9f) }
+        c5.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
         val c6 = statCard("🏆 " + Db.bestStreak(), "best streak (days)")
         c6.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         g3.addView(c5); g3.addView(c6)
@@ -2073,7 +2383,7 @@ class MainActivity : Activity() {
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.gravity = Gravity.CENTER_HORIZONTAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            if (perfRange <= 30) colL.addView(tv(n.toString(), 10f, Glass.muted(this@MainActivity), true))
+            if (perfRange <= 30) colL.addView(tv(n.toString(), 11f, Glass.muted(this@MainActivity), true))
             val bar = View(this)
             val h = dp(6f) + (dp(64f) * n / maxB)
             bar.layoutParams = LinearLayout.LayoutParams(-1, h).apply {
@@ -2086,7 +2396,7 @@ class MainActivity : Activity() {
             g.cornerRadius = dp(4f).toFloat()
             bar.background = g
             colL.addView(bar)
-            colL.addView(tv(lbl, 9.5f, Glass.muted(this@MainActivity)))
+            colL.addView(tv(lbl, 11f, Glass.muted(this@MainActivity)))
             bars.addView(colL)
         }
         chart.addView(bars)
@@ -2096,13 +2406,13 @@ class MainActivity : Activity() {
         val projRows = Db.doneByProject(from, today)
         if (projRows.isNotEmpty()) {
             val pc = card()
-            pc.addView(tv("Done by project", 14.5f, Glass.text(this@MainActivity), true))
+            pc.addView(tv("Done by project", 15f, Glass.text(this@MainActivity), true))
             projRows.take(6).forEach { (pid, n) ->
                 val name = Store.state.projects.find { it.id == pid }?.name ?: "Inbox / deleted"
                 val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
                 rowL.layoutParams = lp(t = dp(6f))
-                val nm = tv("# $name", 14f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                rowL.addView(nm); rowL.addView(tv(n.toString(), 14f, Glass.text(this@MainActivity), true))
+                val nm = tv("# $name", 15f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                rowL.addView(nm); rowL.addView(tv(n.toString(), 15f, Glass.text(this@MainActivity), true))
                 pc.addView(rowL)
             }
             content.addView(pc)
@@ -2115,12 +2425,12 @@ class MainActivity : Activity() {
         done.take(80).forEach { c ->
             if (c.date != lastDate) {
                 lastDate = c.date
-                content.addView(tv(if (c.date == today) "Today" else Dates.fmtDay(c.date), 12.5f, Accents.acc1(this), true))
+                content.addView(tv(if (c.date == today) "Today" else Dates.fmtDay(c.date), 13f, if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.acc1(this@MainActivity), true))
             }
             val proj = Store.state.projects.find { it.id == c.projectId }
-            content.addView(tv("✅  " + c.title + if (proj != null) "   #" + proj.name else "", 14f))
+            content.addView(tv("✅  " + c.title + if (proj != null) "   #" + proj.name else "", 15f))
         }
-        if (done.size > 80) content.addView(tv("…and ${done.size - 80} more", 12.5f, Glass.muted(this@MainActivity)))
+        if (done.size > 80) content.addView(tv("…and ${done.size - 80} more", 13f, Glass.muted(this@MainActivity)))
 
         // missed list
         content.addView(dayGroup("✗ MISSED — ${missed.size}"))
@@ -2128,11 +2438,11 @@ class MainActivity : Activity() {
         missed.take(80).forEach { m ->
             val proj = Store.state.projects.find { it.id == m.projectId }
             val whenLbl = if (m.date == Dates.addDays(today, -1)) "Yesterday" else Dates.fmtDay(m.date)
-            content.addView(tv("✗  " + m.title + "   ·  " + whenLbl + if (proj != null) "   #" + proj.name else "", 14f, Glass.muted(this@MainActivity)))
+            content.addView(tv("✗  " + m.title + "   ·  " + whenLbl + if (proj != null) "   #" + proj.name else "", 15f, Glass.muted(this@MainActivity)))
         }
-        if (missed.size > 80) content.addView(tv("…and ${missed.size - 80} more", 12.5f, Glass.muted(this@MainActivity)))
+        if (missed.size > 80) content.addView(tv("…and ${missed.size - 80} more", 13f, Glass.muted(this@MainActivity)))
 
-        content.addView(tv("Stored in your on-device database (SQLite). Missed days are recorded automatically — including every day a recurring task came due and wasn't done. History grows from your real usage.", 12f, Glass.muted(this@MainActivity)))
+        content.addView(tv("Stored in your on-device database (SQLite). Missed days are recorded automatically — including every day a recurring task came due and wasn't done. History grows from your real usage.", 13f, Glass.muted(this@MainActivity)))
     }
 
     private fun perfBuckets(range: Int, byDay: Map<String, Int>): List<Pair<String, Int>> {
@@ -2184,7 +2494,7 @@ class MainActivity : Activity() {
         val busiest = rows.firstOrNull()
         if (busiest != null && busiest.open + busiest.done7 > 0) {
             val c = card()
-            c.addView(tv("🏆 Busiest project", 13f, Glass.GOLD, true))
+            c.addView(tv("🏆 Busiest project", 13f, Glass.gold(this@MainActivity), true))
             val b = tv("#" + busiest.p.name, 17f, Glass.text(this@MainActivity), true); b.layoutParams = lp(t = dp(3f))
             c.addView(b)
             c.addView(tv("${busiest.open} open · ${busiest.done7} done this week", 13f, Glass.muted(this@MainActivity)))
@@ -2195,7 +2505,7 @@ class MainActivity : Activity() {
             val headL = LinearLayout(this); headL.orientation = LinearLayout.HORIZONTAL
             val nm = tv("#" + r.p.name, 15f, Glass.text(this@MainActivity), true); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             headL.addView(nm)
-            headL.addView(tv("${(r.pct * 100).toInt()}% weekly completion", 12.5f, Glass.muted(this@MainActivity)))
+            headL.addView(tv("${(r.pct * 100).toInt()}% weekly completion", 13f, Glass.muted(this@MainActivity)))
             c.addView(headL)
             c.addView(tv("${r.open} open · ${r.done7} done in the last 7 days", 13f, Glass.muted(this@MainActivity)))
             c.addView(progressBar(r.pct))
@@ -2222,8 +2532,8 @@ class MainActivity : Activity() {
             rowL.addView(ic)
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(a.text, 14f))
-            colL.addView(tv(fmtWhen(a.at), 12f, Glass.muted(this@MainActivity)))
+            colL.addView(tv(a.text, 15f))
+            colL.addView(tv(fmtWhen(a.at), 13f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             c.addView(rowL)
         }
@@ -2234,10 +2544,15 @@ class MainActivity : Activity() {
 
     private fun renderRamble() {
         val c = card()
-        c.addView(tv("Say it or type it — one task per line. Dates, #projects, @labels and p1 work in every line.", 13.5f, Glass.muted(this@MainActivity)))
-        val ta = input("e.g.\nCall mom tomorrow @family\nBuy milk #Shopping\nGym at 7am every day p2", "", multi = true)
+        c.addView(tv("Say it or type it — one task per line. Dates, #projects, @labels and p1 work in every line.", 13f, Glass.muted(this@MainActivity)))
+        val ta = input("e.g.\nCall mom tomorrow @family\nBuy milk #Shopping\nGym at 7am every day p2", rambleText, multi = true)
         ta.minLines = 5
         ta.gravity = Gravity.TOP
+        ta.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: Editable?) { rambleText = e?.toString() ?: "" }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
         c.addView(ta)
         val mic = ghostBtn("🎙️ Start listening") {
             if (Build.VERSION.SDK_INT >= 23 &&
@@ -2262,6 +2577,7 @@ class MainActivity : Activity() {
             val lines = ta.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }
             if (lines.isEmpty()) { toast("Nothing to add yet"); return@accentBtn }
             lines.forEach { line -> Store.addTaskFromParse(Parser.parse(line)) }
+            rambleText = ""
             Store.save()
             Sfx.add()
             toast("Added ${lines.size} tasks ✅")
@@ -2285,15 +2601,21 @@ class MainActivity : Activity() {
 
     private fun renderAssist() {
         val c = card()
-        c.addView(tv("Paste an email, message or brain-dump — one task per line. GhostBlade extracts clean tasks and keeps dates, projects and priorities.", 13.5f, Glass.muted(this@MainActivity)))
-        val ta = input("Paste text here…", "", multi = true)
+        c.addView(tv("Paste an email, message or brain-dump — one task per line. GhostBlade extracts clean tasks and keeps dates, projects and priorities.", 13f, Glass.muted(this@MainActivity)))
+        val ta = input("Paste text here…", assistText, multi = true)
         ta.minLines = 6
         ta.gravity = Gravity.TOP
+        ta.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: Editable?) { assistText = e?.toString() ?: "" }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
         c.addView(ta)
         val ex = accentBtn("Extract tasks") {
             val lines = extractLines(ta.text.toString())
             if (lines.isEmpty()) { toast("Nothing found — paste some text first"); return@accentBtn }
             lines.forEach { line -> Store.addTaskFromParse(Parser.parse(line)) }
+            assistText = ""
             Store.save()
             Sfx.add()
             toast("Extracted ${lines.size} tasks ✅")
@@ -2317,6 +2639,8 @@ class MainActivity : Activity() {
 
     private fun writeDownload(name: String, text: String) {
         try {
+            // Where the file actually landed, for the toast.
+            val where: String
             if (Build.VERSION.SDK_INT >= 29) {
                 val cv = android.content.ContentValues()
                 cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
@@ -2326,12 +2650,20 @@ class MainActivity : Activity() {
                     ?: throw Exception("insert failed")
                 val os = contentResolver.openOutputStream(uri) ?: throw Exception("open failed")
                 os.write(text.toByteArray(Charsets.UTF_8)); os.close()
+                where = "Downloads"
             } else {
-                val f = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), name)
+                // API 24–28: writing to the public Downloads folder needs
+                // WRITE_EXTERNAL_STORAGE, which the app never requests, so
+                // that write always failed with "Could not save file". The
+                // app's own external Downloads folder needs no permission.
+                val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?: throw Exception("no external dir")
+                val f = File(dir, name)
                 val os = FileOutputStream(f)
                 os.write(text.toByteArray(Charsets.UTF_8)); os.close()
+                where = "app storage"
             }
-            toast("Saved to Downloads: $name")
+            toast("Saved to $where: $name")
         } catch (e: Exception) {
             toast("Could not save file")
         }
@@ -2377,8 +2709,8 @@ class MainActivity : Activity() {
             rowL.gravity = Gravity.CENTER_VERTICAL
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(fmtWhen(b.at), 14.5f))
-            colL.addView(tv(if (b.auto) "Automatic" else "Manual", 12.5f, Glass.muted(this@MainActivity)))
+            colL.addView(tv(fmtWhen(b.at), 15f))
+            colL.addView(tv(if (b.auto) "Automatic" else "Manual", 13f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             val restore = chipBtn("Restore", false) {
                 AlertDialog.Builder(this)
@@ -2409,7 +2741,7 @@ class MainActivity : Activity() {
     private fun renderSmartPlan() {
         val items = smartPlanItems()
         val intro = card()
-        intro.addView(tv("🤖 Smart Plan", 15.5f, Glass.text(this@MainActivity), true))
+        intro.addView(tv("🤖 Smart Plan", 16f, Glass.text(this@MainActivity), true))
         intro.addView(tv("An offline planner: today's tasks in priority order, starting at the next quarter-hour, using each task's duration (25 min default) with 10-minute breaks. No cloud, no AI bill — just a solid plan.", 13f, Glass.muted(this@MainActivity)))
         content.addView(intro)
         if (items.isEmpty()) {
@@ -2421,16 +2753,16 @@ class MainActivity : Activity() {
             totalMin += dur
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             rowL.gravity = Gravity.CENTER_VERTICAL
-            rowL.background = Glass.panel(this, 18f)
+            rowL.background = Glass.panel(this, 20f)
             rowL.setPadding(dp(13f), dp(11f), dp(13f), dp(11f))
             rowL.layoutParams = lp(b = dp(8f))
-            val time = tv(start, 14.5f, Accents.acc1(this), true)
+            val time = tv(start, 15f, if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.acc1(this@MainActivity), true)
             time.layoutParams = LinearLayout.LayoutParams(dp(56f), -2)
             rowL.addView(time)
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(t.title, 14.5f))
-            colL.addView(tv("P${t.priority} · $dur min", 12f, Glass.muted(this@MainActivity)))
+            colL.addView(tv(t.title, 15f))
+            colL.addView(tv("P${t.priority} · $dur min", 13f, Glass.muted(this@MainActivity)))
             rowL.addView(colL)
             content.addView(rowL)
         }
@@ -2480,28 +2812,28 @@ class MainActivity : Activity() {
         val board = LinearLayout(this); board.orientation = LinearLayout.HORIZONTAL
         cols.forEach { (status, name) ->
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
-            colL.background = Glass.panel(this, 18f)
+            colL.background = Glass.panel(this, 20f)
             colL.setPadding(dp(6f), dp(8f), dp(6f), dp(8f))
             colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply {
-                rightMargin = if (status != "done") dp(7f) else 0
+                rightMargin = if (status != "done") dp(8f) else 0
             }
             val headT = tv(name.uppercase(), 11f, Glass.muted(this@MainActivity), true); headT.gravity = Gravity.CENTER
             colL.addView(headT)
             val tasks = Store.state.tasks.filter { it.projectId == p.id && it.status == status }
             if (tasks.isEmpty()) {
-                val e = tv("—", 12f, Glass.muted(this@MainActivity)); e.gravity = Gravity.CENTER
+                val e = tv("—", 13f, Glass.muted(this@MainActivity)); e.gravity = Gravity.CENTER
                 colL.addView(e)
             }
             tasks.forEach { t ->
                 val cardL = LinearLayout(this); cardL.orientation = LinearLayout.VERTICAL
-                cardL.background = Glass.panel(this, 14f)
+                cardL.background = Glass.panel(this, 12f)
                 cardL.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-                cardL.layoutParams = lp(t = dp(7f))
-                cardL.addView(tv(t.title, 12.5f))
+                cardL.layoutParams = lp(t = dp(8f))
+                cardL.addView(tv(t.title, 13f))
                 val meta = mutableListOf<String>()
                 if (t.priority < 4) meta.add("P" + t.priority)
                 if (t.dueDate != null) meta.add(if (t.dueDate == Dates.today()) "Today" else Dates.fmtDay(t.dueDate!!))
-                if (meta.isNotEmpty()) cardL.addView(tv(meta.joinToString(" · "), 10.5f, Glass.muted(this@MainActivity)))
+                if (meta.isNotEmpty()) cardL.addView(tv(meta.joinToString(" · "), 11f, Glass.muted(this@MainActivity)))
                 val btns = LinearLayout(this); btns.orientation = LinearLayout.HORIZONTAL
                 btns.layoutParams = lp(t = dp(6f))
                 if (status != "todo") {
@@ -2550,6 +2882,10 @@ class MainActivity : Activity() {
         val lm = getSystemService(LOCATION_SERVICE) as? LocationManager
         if (lm == null) { toast("Location unavailable"); return }
         toast("Getting your location…")
+        // One-shot: the same listener is registered with both providers,
+        // so without this the first fix would attach the location twice
+        // (double toast + double sheet rebuild).
+        var done = false
         try {
             var best: Location? = null
             for (p in lm.getProviders(true)) {
@@ -2562,7 +2898,12 @@ class MainActivity : Activity() {
                 return
             }
             val listener = object : LocationListener {
-                override fun onLocationChanged(l: Location) = applyLocation(task, l.latitude, l.longitude)
+                override fun onLocationChanged(l: Location) {
+                    if (done) return
+                    done = true
+                    try { lm.removeUpdates(this) } catch (e: Exception) {}
+                    applyLocation(task, l.latitude, l.longitude)
+                }
                 override fun onStatusChanged(p: String?, s: Int, bundle: Bundle?) {}
                 override fun onProviderEnabled(p: String) {}
                 override fun onProviderDisabled(p: String) {}
@@ -2580,13 +2921,21 @@ class MainActivity : Activity() {
         task.locLat = lat; task.locLng = lng
         Reminders.syncGeo(this, task)
         Store.save()
-        showSheet(buildEditor(task))
+        // Only rebuild the editor if it is still the open sheet for this
+        // task — a late location fix must not resurrect a sheet the user
+        // already closed. The location itself is already saved either way.
+        if (editingId == task.id && sheetRoot.visibility == View.VISIBLE) showSheet(buildEditor(task))
         toast("Location reminder set 📍")
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (sheetRoot.visibility == View.VISIBLE) { closeSheet(); return }
+        if (sheetRoot.visibility == View.VISIBLE) {
+            // Step back through sub-sheets first (Quick Add → Date picker → …);
+            // only close when at the root sheet, with the editor discard guard.
+            if (!popSheet()) attemptCloseSheet()
+            return
+        }
         if (sub != null) { sub = null; render(); return }
         super.onBackPressed()
     }

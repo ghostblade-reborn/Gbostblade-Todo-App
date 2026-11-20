@@ -123,10 +123,18 @@ object Parser {
     private fun monthDay(month: Int, day: Int): String {
         val now = java.util.Calendar.getInstance()
         val c = java.util.Calendar.getInstance()
-        c.set(now.get(java.util.Calendar.YEAR), month, day, 0, 0, 0)
+        // Clamp impossible days ("31 feb") to the month's last day instead
+        // of letting the lenient calendar roll them into the next month.
+        fun clamped(year: Int): Int {
+            val probe = java.util.Calendar.getInstance()
+            probe.set(year, month, 1, 0, 0, 0)
+            return minOf(day, probe.getActualMaximum(java.util.Calendar.DAY_OF_MONTH))
+        }
+        val year = now.get(java.util.Calendar.YEAR)
+        c.set(year, month, clamped(year), 0, 0, 0)
         var ds = Dates.dstr(c)
         if (ds < Dates.today()) {
-            c.add(java.util.Calendar.YEAR, 1)
+            c.set(year + 1, month, clamped(year + 1), 0, 0, 0)
             ds = Dates.dstr(c)
         }
         return ds

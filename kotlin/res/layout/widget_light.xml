@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/wRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg_light"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="⚔️ GhostBlade · Today"
+        android:textColor="#131318"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/wCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="0 to do · 0 done today"
+        android:textColor="#62626D"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/wL1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="7dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#131318"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/wL2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#131318"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/wL3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#131318"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/wL4"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#131318"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/wL5"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#131318"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/wEmpty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="All clear 🎉 — open the app to plan your day."
+        android:textColor="#62626D"
+        android:textSize="12.5sp"
+        android:visibility="gone" />
+</LinearLayout>

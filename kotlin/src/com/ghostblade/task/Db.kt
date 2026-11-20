@@ -50,6 +50,10 @@ object Db {
         db.insertWithOnConflict("meta", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    private fun clearMeta(key: String) {
+        db.delete("meta", "key=?", arrayOf(key))
+    }
+
     /* ---------- migration & sync with the JSON store ---------- */
 
     fun migrateIfNeeded(state: State) {
@@ -70,6 +74,10 @@ object Db {
             state.completions.forEach { insertCompletionRow(it) }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+        // The day_tasks table was just wiped, so the rollover watermark
+        // must go too — otherwise the next rollover would skip missed days
+        // that predate the watermark and were never re-derived.
+        clearMeta("last_rollover")
         rollover(state)
     }
 
@@ -91,6 +99,13 @@ object Db {
     fun rollover(state: State) {
         val today = Dates.today()
         val yesterday = Dates.addDays(today, -1)
+        // Watermark: days up to this date were already rolled over by a
+        // previous run, so missed-day stepping can start there instead of
+        // re-walking from a task's original due date on every launch
+        // (a daily task a year overdue used to cost up to 400 steps +
+        // 400 queries per launch, forever). Null on first run → full
+        // derivation, exactly as before.
+        val watermark = meta("last_rollover")
         db.beginTransaction()
         try {
             // clear stale pending rows (recomputed below)
@@ -99,7 +114,8 @@ object Db {
                 val due = t.dueDate ?: continue
                 if (due < today) {
                     // every day this task came due and wasn't completed = missed
-                    for (d in expectedDueDates(t, due, yesterday)) {
+                    val start = if (watermark != null && watermark > due) watermark else due
+                    for (d in expectedDueDates(t, start, yesterday)) {
                         if (!hasCompletionOn(t.id, d)) {
                             val cv = ContentValues()
                             cv.put("date", d); cv.put("task_id", t.id); cv.put("title", t.title)
@@ -130,7 +146,11 @@ object Db {
         while (d <= to && guard < 400) {
             out.add(d)
             ghost.dueDate = d
-            d = Dates.advanceDate(ghost)
+            val next = Dates.advanceDate(ghost)
+            // An unrecognised recurrence advances in place — stop instead
+            // of burning all 400 guard iterations on the same date.
+            if (next == d) break
+            d = next
             guard++
         }
         return out

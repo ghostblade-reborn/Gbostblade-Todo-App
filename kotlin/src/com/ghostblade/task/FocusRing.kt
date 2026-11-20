@@ -14,6 +14,10 @@ class FocusRing(ctx: Context) : View(ctx) {
         set(v) { field = v.coerceIn(0f, 1f); invalidate() }
     var ringColor: Int = Color.WHITE
         set(v) { field = v; invalidate() }
+    /** Track (un-elapsed) ring colour — theme-aware via the setter in
+     *  renderFocus; the default matches the original dark-theme look. */
+    var trackColor: Int = Color.argb(30, 255, 255, 255)
+        set(v) { field = v; bgPaint.color = v; invalidate() }
 
     private val stroke = Glass.dp(ctx, 10f).toFloat()
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

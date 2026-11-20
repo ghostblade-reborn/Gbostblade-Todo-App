@@ -26,7 +26,9 @@ object Store {
         save()
         Db.init(appCtx)
         Db.migrateIfNeeded(state)
-        Db.rollover(state)
+        // A single bad row must never brick startup — rollover is idempotent
+        // and will simply run again on the next launch / day change.
+        try { Db.rollover(state) } catch (e: Exception) { /* analytics only */ }
     }
 
     fun save() {
@@ -42,6 +44,10 @@ object Store {
             .filter { it.dueDate == Dates.today() || Dates.isOverdue(it) }
             .sortedWith(taskComparator)
         val json = JSONObject()
+        // The day this snapshot was computed for — the widget refreshes on
+        // its own schedule and can otherwise keep showing yesterday's
+        // tasks and counts until the next in-app save.
+        json.put("date", Dates.today())
         json.put("open", todayList.size)
         json.put("done", completionsOn(Dates.today()))
         val lines = org.json.JSONArray()
@@ -104,13 +110,16 @@ object Store {
         return streak
     }
 
-    fun snapshot(): String = state.toJson().toString()
+    fun snapshot(): String = state.toJson(includeBackups = false).toString()
 
     fun importData(text: String): Boolean {
         return try {
             val d = JSONObject(text)
             if (!d.has("tasks")) return false
             val fresh = State.fromJson(d)
+            // Cancel the outgoing tasks' alarms/geofences first, so an import
+            // never leaves orphan reminders firing for tasks it replaced.
+            state.tasks.forEach { Reminders.drop(appCtx, it); Reminders.clearGeo(appCtx, it) }
             state.tasks = fresh.tasks
             state.projects = fresh.projects
             state.labels = fresh.labels
@@ -186,7 +195,15 @@ object Store {
         Db.logCompletion(comp)
         logActivity("complete", "Completed \"" + t.title + "\"")
         return if (t.recurrence != null) {
-            t.dueDate = Dates.advanceDate(t)
+            // Advance until the next occurrence is no longer in the past —
+            // completing a daily task that is 5 days overdue used to move it
+            // only one day, leaving it still overdue (and every extra tap
+            // logged a phantom completion). Guard mirrors Db's 400 cap and
+            // also stops unrecognised recurrences, which advance in place.
+            var guard = 0
+            do { t.dueDate = Dates.advanceDate(t) } while (
+                t.dueDate != null && t.dueDate!! < Dates.today() && ++guard < 400
+            )
             Reminders.sync(appCtx, t)
             save()
             "Done ✅ Next: " + Dates.fmtDay(t.dueDate!!)

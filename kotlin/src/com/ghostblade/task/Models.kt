@@ -45,7 +45,7 @@ class State {
     var seeded = false
     var lastBackupDay = ""
 
-    fun toJson(): JSONObject {
+    fun toJson(includeBackups: Boolean = true): JSONObject {
         val o = JSONObject()
         o.put("tasks", JSONArray().apply { tasks.forEach { put(it.toJson()) } })
         o.put("projects", JSONArray().apply { projects.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("color", it.color)) } })
@@ -53,7 +53,12 @@ class State {
         o.put("filters", JSONArray().apply { filters.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("query", it.query)) } })
         o.put("completions", JSONArray().apply { completions.forEach { put(JSONObject().put("id", it.id).put("taskId", it.taskId).put("title", it.title).put("projectId", it.projectId ?: JSONObject.NULL).put("date", it.date).put("at", it.at)) } })
         o.put("activities", JSONArray().apply { activities.forEach { put(JSONObject().put("id", it.id).put("type", it.type).put("text", it.text).put("at", it.at)) } })
-        o.put("backups", JSONArray().apply { backups.forEach { put(JSONObject().put("id", it.id).put("at", it.at).put("auto", it.auto).put("data", it.data)) } })
+        // Snapshots (backups, sync exports) pass includeBackups = false: a
+        // backup must not embed all previous backups inside itself, which
+        // made the state file grow multiplicatively. The on-disk state file
+        // keeps the default (backups included); restores never read the
+        // embedded copies, so nothing user-visible changes.
+        if (includeBackups) o.put("backups", JSONArray().apply { backups.forEach { put(JSONObject().put("id", it.id).put("at", it.at).put("auto", it.auto).put("data", it.data)) } })
         o.put("seeded", seeded)
         o.put("lastBackupDay", lastBackupDay)
         return o
@@ -112,8 +117,8 @@ fun taskFromJson(o: JSONObject): TaskItem {
         notes = o.optString("notes", ""),
         projectId = if (o.isNull("projectId")) null else o.optString("projectId"),
         priority = o.optInt("priority", 4),
-        dueDate = if (o.isNull("dueDate")) null else o.optString("dueDate"),
-        dueTime = if (o.isNull("dueTime")) null else o.optString("dueTime"),
+        dueDate = if (o.isNull("dueDate")) null else o.optString("dueDate").takeIf { Dates.isValidDateStr(it) },
+        dueTime = if (o.isNull("dueTime")) null else o.optString("dueTime").takeIf { Dates.isValidTimeStr(it) },
         recurrence = if (o.isNull("recurrence")) null else o.optString("recurrence"),
         durationMin = if (o.isNull("durationMin")) null else o.optInt("durationMin"),
         reminderOffsetMin = if (o.isNull("reminderOffsetMin")) null else o.optInt("reminderOffsetMin"),

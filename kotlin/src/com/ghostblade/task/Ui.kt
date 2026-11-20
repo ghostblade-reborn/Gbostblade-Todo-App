@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.ImageView
@@ -45,9 +46,15 @@ object Accents {
 }
 
 /** Liquid Glass look on native views: translucent fill + specular top line +
- *  soft rim, layered over the aurora/photo wallpaper behind. */
+ *  soft rim, layered over the aurora/photo wallpaper behind.
+ *
+ *  Design tokens (Alpha P2-1/P2-2, v3.6): radius scale follows outer − 6
+ *  nesting — page card 24 → inner card 18 → chip 12; standalone: input 14,
+ *  row 20, card 24, sheet 30, nav 34. Type scale: Display 40 · Title 24 ·
+ *  Headline 17 · Section 16 · Body 15 · Secondary 13 · Caption 11.
+ *  (Glyph-only sizes — icons, chevrons, the FAB "+" — sit outside the scale.) */
 object Glass {
-    fun dp(ctx: Context, v: Float): Int = (v * ctx.resources.displayMetrics.density).toInt()
+    fun dp(ctx: Context, v: Float): Int = (v * ctx.resources.displayMetrics.density + 0.5f).toInt()
 
     fun isWhite(ctx: Context) = Prefs.theme(ctx) == "white"
     fun isBlack(ctx: Context) = Prefs.theme(ctx) == "black"
@@ -58,10 +65,18 @@ object Glass {
     /** Theme-aware secondary text colour; the Red text option turns it into
      *  the accent colour (Apple Music's red artist/detail lines). */
     fun muted(ctx: Context): Int = when {
+        Prefs.redText(ctx) && isWhite(ctx) -> Accents.acc2(ctx)
         Prefs.redText(ctx) -> Accents.base(ctx)
         isWhite(ctx) -> 0xFF62626D.toInt()
         else -> MUTED
     }
+
+    /** Theme-aware gold (PRO tags, trophies, UNDO): deep gold on White,
+     *  where the bright GOLD constant washes out to ~1.4:1. */
+    fun gold(ctx: Context): Int = if (isWhite(ctx)) 0xFF8A6D00.toInt() else GOLD
+
+    /** Theme-aware overdue / destructive red: deeper on White (~4.6:1). */
+    fun overdue(ctx: Context): Int = if (isWhite(ctx)) 0xFFD92C1F.toInt() else OVERDUE
 
     /** Glass panel background: contrast underlay + milky sheen + rim,
      *  themed for Aurora / Black / White appearances. */
@@ -100,7 +115,10 @@ object Glass {
         under.cornerRadius = r
         under.setColor(
             if (isBlack(ctx)) Color.argb(if (strong) 244 else 234, 14, 14, 18)
-            else Color.argb(if (strong) 150 else 88, 10, 11, 18)
+            // On API <31 there is no RenderEffect frost under the panels, so
+            // the wallpaper shows through sharp — a stronger underlay keeps
+            // Aurora panels readable there. API 31+ renders as before.
+            else Color.argb(if (strong) 150 else if (Build.VERSION.SDK_INT < 31) 128 else 88, 10, 11, 18)
         )
         return LayerDrawable(arrayOf(under, base))
     }

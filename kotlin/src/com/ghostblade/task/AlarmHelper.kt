@@ -42,6 +42,12 @@ object AlarmHelper {
         ed.apply()
     }
 
+    fun exactAlarmsAllowed(ctx: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        return am.canScheduleExactAlarms()
+    }
+
     private fun arm(ctx: Context, id: String, title: String, triggerAtMillis: Long) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val pi = pendingIntent(ctx, id, title)

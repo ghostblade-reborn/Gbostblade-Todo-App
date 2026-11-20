@@ -117,6 +117,28 @@ fun main() {
     check("f overdue2", Filters.eval(s, t3, "overdue"), true)
     check("f recurring", Filters.eval(s, t3, "recurring"), true)
 
+    /* ---------- Parser / Dates hardening ---------- */
+    p = Parser.parse("Pay rent 31 feb")
+    check("feb31 stays in feb", p.dueDate?.substring(5, 7), "02")
+    check("feb31 clamps to month end", listOf("02-28", "02-29").contains(p.dueDate?.substring(5)), true)
+    val tBad = TaskItem(id = "x", title = "Bad weekday", dueDate = today, recurrence = "weekly:9")
+    check("advance weekly:9 stays put", Dates.advanceDate(tBad), today)
+
+    /* ---------- Dates validators (import sanitising) ---------- */
+    check("valid date", Dates.isValidDateStr("2026-11-20"), true)
+    check("valid leap day", Dates.isValidDateStr("2024-02-29"), true)
+    check("invalid non-leap feb29", Dates.isValidDateStr("2026-02-29"), false)
+    check("invalid feb31", Dates.isValidDateStr("2026-02-31"), false)
+    check("invalid month13", Dates.isValidDateStr("2026-13-01"), false)
+    check("invalid empty date", Dates.isValidDateStr(""), false)
+    check("invalid text date", Dates.isValidDateStr("tomorrow"), false)
+    check("invalid unpadded date", Dates.isValidDateStr("2026-2-9"), false)
+    check("valid time", Dates.isValidTimeStr("07:30"), true)
+    check("valid time 23:59", Dates.isValidTimeStr("23:59"), true)
+    check("invalid time 24:00", Dates.isValidTimeStr("24:00"), false)
+    check("invalid time 7:30", Dates.isValidTimeStr("7:30"), false)
+    check("invalid time 12:60", Dates.isValidTimeStr("12:60"), false)
+
     println("----")
     println("$total checks, $failures failures")
     if (failures > 0) kotlin.system.exitProcess(1)
