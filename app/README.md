@@ -6,10 +6,10 @@ The installable Android edition of GhostBlade Task — now **100% Kotlin**.
 |---|---|
 | **App name** | GhostBlade Task |
 | **Package** | `com.ghostblade.task` |
-| **Version** | 3.1-kotlin (versionCode 15) |
-| **File** | `GhostBlade Task v4.apk` (751 KB) |
+| **Version** | 3.9-kotlin (versionCode 23), released as v4 |
+| **File** | `GhostBlade Task v4.apk` (759 KB) |
 | **Requires** | Android 7.0 (API 24) or newer |
-| **SHA-256** | `0c7b0e6d610ffa825ca8aa1858a489b4ec8fb2534dbf48c989ffa6a4bd1659d3` |
+| **SHA-256** | `2caca877868d4cc48306c64608b23c27ad11f6d2dfc9494cbe3b829b83d5bdc1` |
 
 ## Download
 
