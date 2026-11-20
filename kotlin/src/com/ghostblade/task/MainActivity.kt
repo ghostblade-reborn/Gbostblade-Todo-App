@@ -27,6 +27,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -69,6 +70,72 @@ class MainActivity : Activity() {
 
     /* Phase 3 screen state */
     private var boardMode = false
+    /* ----- Todoist exact tokens (TEAMONE-ANALYSIS-SCREENS §0.1) — inline in
+       MainActivity because Ui.kt is owned by Implementer A in parallel. ----- */
+    private val TD_BG = 0xFF212121.toInt()
+    private val TD_CARD = 0xFF282828.toInt()
+    private val TD_NAV = 0xFF262626.toInt()
+    private val TD_PILL = 0xFF472524.toInt()
+    private val TD_RED = 0xFFD04349.toInt()
+    private val TD_SALMON = 0xFFE56864.toInt()
+    private val TD_GREEN = 0xFF2FB457.toInt()
+    private val TD_AMBER = 0xFFF09C1F.toInt()
+    private val TD_GREY = 0xFF9E9E9E.toInt()
+    private val TD_EMPHASIS = 0xFF363636.toInt()
+    /* Display-sheet state, per view key (sub ?: view). Group/Sort/Filter ride
+       on Team Two's DisplayEngine; Layout + Completed now persist per
+       view (B2 — see the disp*For helpers below). */
+    /* Display state is PER VIEW (Team Two addendum item 1: Todoist keeps a
+       different config per view — Inbox Manual, Today Smart + filters…).
+       Layout / Completed / Grouping / Sorting persist per view id in
+       Prefs, seeded from Team Two's persisted State.displayLayout /
+       displayShowCompleted (which also receive every write, as the
+       last-used global). Filter rows stay per-view for the session. */
+    private fun dispLayoutFor(key: String): String =
+        Prefs.prefs(this).getString("disp_layout_$key", null) ?: Store.state.displayLayout
+    private fun setDispLayout(key: String, v: String) {
+        Prefs.set(this, "disp_layout_$key", v)
+        Store.setDisplayLayout(v)
+    }
+    private fun dispShowFor(key: String): Boolean =
+        if (Prefs.prefs(this).contains("disp_show_$key"))
+            Prefs.prefs(this).getBoolean("disp_show_$key", true)
+        else Store.state.displayShowCompleted
+    private fun setDispShow(key: String, v: Boolean) {
+        Prefs.setBool(this, "disp_show_$key", v)
+        Store.setDisplayShowCompleted(v)
+    }
+    private fun dispGroupFor(key: String): GroupMode {
+        val n = Prefs.prefs(this).getString("disp_group_$key", null) ?: return GroupMode.NONE
+        return try { GroupMode.valueOf(n) } catch (e: Exception) { GroupMode.NONE }
+    }
+    private fun setDispGroup(key: String, m: GroupMode) = Prefs.set(this, "disp_group_$key", m.name)
+    private fun dispSortFor(key: String): SortMode {
+        val n = Prefs.prefs(this).getString("disp_sort_$key", null) ?: return SortMode.MANUAL
+        return try { SortMode.valueOf(n) } catch (e: Exception) { SortMode.MANUAL }
+    }
+    private fun setDispSort(key: String, m: SortMode) = Prefs.set(this, "disp_sort_$key", m.name)
+    private val dispPrio = mutableMapOf<String, MutableSet<Int>>()
+    private val dispDate = mutableMapOf<String, String>()
+    private val dispLabel = mutableMapOf<String, String>()
+    private val dispAssignee = mutableMapOf<String, String>()
+    private var todayOverdueCollapsed = false
+    private var upcomingExpanded = false
+    private var browseProjectsCollapsed = false
+    private var lastReschedule: List<Pair<String, String?>>? = null
+    /* ----- B2 state ----- */
+    /** Multi-select mode (⋮ → Select tasks): chrome-only crossfade, the
+     *  list itself never moves (TEAMONE-ANALYSIS-VIDEO §3.7). */
+    private var selectMode = false
+    private val selectedIds = mutableSetOf<String>()
+    /** Productivity screen tab: "daily" | "weekly" | "karma". */
+    private var prodTab = "daily"
+    /** True while the open sheet is the Quick Add floating card (its
+     *  presenter differs from showSheet: scale/fade, scrim α≈0.50). */
+    private var sheetIsQa = false
+    private lateinit var mainScroll: ScrollView
+    private lateinit var headerHolder: FrameLayout
+    private lateinit var headerActions: LinearLayout
     private var calCursor: java.util.Calendar = java.util.Calendar.getInstance()
     private var selDay: String? = null
     private var focusTaskId: String? = null
@@ -268,7 +335,11 @@ class MainActivity : Activity() {
     private fun buildRoot() {
         root = FrameLayout(this)
         wallpaperHolder = FrameLayout(this)
-        wallpaperHolder.addView(Glass.wallpaperView(this), FrameLayout.LayoutParams(-1, -1))
+        // Todoist list screens are a flat #212121 (ANALYSIS §0.1) — no aurora
+        // wallpaper behind them in the replicated default look.
+        val bgView = View(this)
+        bgView.setBackgroundColor(TD_BG)
+        wallpaperHolder.addView(bgView, FrameLayout.LayoutParams(-1, -1))
         root.addView(wallpaperHolder, FrameLayout.LayoutParams(-1, -1))
 
         val column = LinearLayout(this)
@@ -276,63 +347,84 @@ class MainActivity : Activity() {
         mainColumn = column
         root.addView(column, FrameLayout.LayoutParams(-1, -1))
 
-        // header (glass card)
+        // header — flat Todoist chrome (ANALYSIS §0.5): the title sits
+        // directly on the #212121 background at ~27sp regular weight, with
+        // the Display icon and the ⋮ overflow at the right. No card.
         val header = LinearLayout(this)
-        header.orientation = LinearLayout.VERTICAL
+        header.orientation = LinearLayout.HORIZONTAL
+        header.gravity = Gravity.CENTER_VERTICAL
         headerCard = header
-        header.background = Glass.panel(this, 26f)
-        header.setPadding(dp(16f), dp(14f), dp(16f), dp(12f))
+        header.setPadding(dp(16f), dp(12f), dp(8f), dp(8f))
         val hp = FrameLayout.LayoutParams(-1, -2)
-        hp.setMargins(dp(16f), dp(10f), dp(16f), dp(4f))
         header.layoutParams = hp
-        Glass.elevate(this, header, 26f, 10f)
-        headerTitle = tv("Today", 24f, Glass.text(this@MainActivity), true)
-        headerSub = tv("", 13f, Glass.muted(this@MainActivity))
+        val titleCol = LinearLayout(this)
+        titleCol.orientation = LinearLayout.VERTICAL
+        titleCol.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        headerTitle = tv("Today", 27f, Glass.text(this@MainActivity), false)
+        headerSub = tv("", 14f, Glass.muted(this@MainActivity))
         headerSub.layoutParams = lp(t = dp(2f))
         val progWrap = FrameLayout(this)
-        progWrap.background = Glass.chip(this, false)
+        progWrap.visibility = View.GONE
         val pw = LinearLayout.LayoutParams(-1, dp(6f)); pw.topMargin = dp(10f)
         progWrap.layoutParams = pw
         headerProgWrap = progWrap
         headerProg = View(this)
-        headerProg.background = Glass.accentGradient(this, 3f)
         progWrap.addView(headerProg, FrameLayout.LayoutParams(0, -1))
-        header.addView(headerTitle); header.addView(headerSub); header.addView(progWrap)
-        val headerHolder = FrameLayout(this)
-        headerHolder.addView(header)
-        column.addView(headerHolder)
+        titleCol.addView(headerTitle); titleCol.addView(headerSub); titleCol.addView(progWrap)
+        header.addView(titleCol)
+        val actions = LinearLayout(this)
+        actions.orientation = LinearLayout.HORIZONTAL
+        actions.gravity = Gravity.CENTER_VERTICAL
+        headerActions = actions
+        val dispBtn = tv("▤", 22f, Glass.text(this@MainActivity))
+        dispBtn.gravity = Gravity.CENTER
+        dispBtn.contentDescription = "Display"
+        dispBtn.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        dispBtn.setOnClickListener { showDisplaySheet() }
+        val overBtn = tv("⋮", 24f, Glass.text(this@MainActivity), true)
+        overBtn.gravity = Gravity.CENTER
+        overBtn.contentDescription = "More options"
+        overBtn.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        overBtn.setOnClickListener { showOverflowMenu(it) }
+        actions.addView(dispBtn); actions.addView(overBtn)
+        header.addView(actions)
+        val hh = FrameLayout(this)
+        hh.addView(header)
+        headerHolder = hh
+        column.addView(hh)
 
         val scroll = ScrollView(this)
+        mainScroll = scroll
         scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(dp(16f), dp(6f), dp(16f), dp(136f))
+        content.setPadding(dp(8f), dp(6f), dp(8f), dp(120f))
         scroll.addView(content)
         column.addView(scroll)
 
-        // floating glass tab bar
+        // bottom nav — flat full-width bar #262626 attached to the screen
+        // bottom (ANALYSIS §0.5): no margins, radius, elevation or frost.
         navBar = LinearLayout(this)
         navBar.orientation = LinearLayout.HORIZONTAL
-        navBar.background = Glass.panel(this, 34f, strong = true)
-        navBar.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+        navBar.setBackgroundColor(TD_NAV)
+        navBar.setPadding(dp(4f), dp(6f), dp(4f), dp(6f))
         val np = FrameLayout.LayoutParams(-1, -2)
         np.gravity = Gravity.BOTTOM
-        np.setMargins(dp(16f), 0, dp(16f), dp(12f))
         navBar.layoutParams = np
-        Glass.elevate(this, navBar, 34f, 16f)
         root.addView(navBar)
 
-        // FAB
-        val fab = tv("+", 30f, 0xFFFFFFFF.toInt(), true)
+        // FAB — rounded square, flat #D04349 (ANALYSIS §0.2: ~52x50dp,
+        // corner radius ~14dp), floating just above the nav bar.
+        val fab = tv("+", 24f, 0xFFFFFFFF.toInt(), false)
         fab.gravity = Gravity.CENTER
-        fab.background = Glass.accentGradient(this, 999f)
-        val fp = FrameLayout.LayoutParams(dp(57f), dp(57f))
+        fab.background = roundedRect(TD_RED, 14f)
+        val fp = FrameLayout.LayoutParams(dp(52f), dp(50f))
         fp.gravity = Gravity.BOTTOM or Gravity.END
-        fp.setMargins(0, 0, dp(18f), dp(92f))
+        fp.setMargins(0, 0, dp(16f), dp(84f))
         fab.layoutParams = fp
         fab.setOnClickListener { openQuickAdd(null) }
         fab.contentDescription = "Add task"
-        Glass.elevate(this, fab, 28f, 8f)
+        Glass.elevate(this, fab, 14f, 8f)
         fabBtn = fab
         root.addView(fab)
 
@@ -366,6 +458,9 @@ class MainActivity : Activity() {
     private fun render() {
         if (sub != "focus") pauseFocus()
         renderHeader()
+        // Productivity repaints this with Todoist.PROD_BG; every other
+        // screen sits directly on the flat #212121 wallpaper layer.
+        content.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         content.removeAllViews()
         val s = sub
         when {
@@ -375,27 +470,21 @@ class MainActivity : Activity() {
             view == "upcoming" -> renderUpcoming()
             view == "browse" -> renderBrowse()
         }
-        // Entrance animation runs ONLY when the screen identity changes —
-        // Apple apps animate on navigation, never on state refresh, so
-        // completing a task or toggling a chip no longer replays the whole
-        // list fade/stagger.
+        // Tab switches CROSSFADE only (150–250ms) with NO lateral slide —
+        // frame-verified in COMPARE-REPORT R0-7 / checklist K1. The fade
+        // runs only when the screen identity changes, never on a
+        // same-screen state refresh.
         val order = listOf("inbox", "today", "upcoming", "browse")
-        var dx = 0f
-        if (s == null && view != lastTab && order.contains(view) && order.contains(lastTab)) {
-            dx = if (order.indexOf(view) > order.indexOf(lastTab)) 40f else -40f
-        }
         if (order.contains(view) && s == null) lastTab = view
+        headerHolder.visibility = if (s == null && view == "browse") View.GONE else View.VISIBLE
         val renderKey = s ?: view
         if (renderKey != lastRenderKey) {
             lastRenderKey = renderKey
+            content.animate().cancel()
             content.alpha = 0f
-            content.translationX = dx
-            content.animate().alpha(1f).translationX(0f).setDuration(320).setInterpolator(sheetEase).start()
-            for (i in 0 until content.childCount) {
-                val ch = content.getChildAt(i)
-                ch.alpha = 0f; ch.translationY = dp(10f).toFloat()
-                ch.animate().alpha(1f).translationY(0f).setStartDelay((i * 30).toLong().coerceAtMost(420)).setDuration(380).setInterpolator(sheetEase).start()
-            }
+            content.translationX = 0f
+            content.translationY = 0f
+            content.animate().alpha(1f).setDuration(200).setInterpolator(sheetEase).start()
         } else {
             content.animate().cancel()
             content.alpha = 1f
@@ -404,9 +493,44 @@ class MainActivity : Activity() {
         renderNav()
     }
 
+    /** Rebuild the header's right-hand actions: Display + ⋮ on list
+     *  screens, a single close ✕ while multi-select is active (the header
+     *  itself becomes "N tasks selected" — VIDEO §3.7). */
+    private fun buildHeaderActions() {
+        headerActions.removeAllViews()
+        if (selectMode) {
+            val close = tv("✕", 20f, Glass.text(this@MainActivity))
+            close.gravity = Gravity.CENTER
+            close.contentDescription = "Exit select mode"
+            close.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+            close.setOnClickListener { exitSelectMode() }
+            headerActions.addView(close)
+            return
+        }
+        val dispBtn = tv("▤", 22f, Glass.text(this@MainActivity))
+        dispBtn.gravity = Gravity.CENTER
+        dispBtn.contentDescription = "Display"
+        dispBtn.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        dispBtn.setOnClickListener { showDisplaySheet() }
+        val overBtn = tv("⋮", 24f, Glass.text(this@MainActivity), true)
+        overBtn.gravity = Gravity.CENTER
+        overBtn.contentDescription = "More options"
+        overBtn.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        overBtn.setOnClickListener { showOverflowMenu(it) }
+        headerActions.addView(dispBtn); headerActions.addView(overBtn)
+    }
+
     private fun renderHeader() {
         val s = sub
         headerProgWrap.visibility = View.GONE
+        val listScreen = s == null || s.startsWith("project:") || s.startsWith("filter:") || s.startsWith("label:")
+        headerActions.visibility = if (listScreen || selectMode) View.VISIBLE else View.GONE
+        buildHeaderActions()
+        if (selectMode) {
+            headerTitle.text = selectedIds.size.toString() + if (selectedIds.size == 1) " task selected" else " tasks selected"
+            headerSub.text = ""
+            return
+        }
         when {
             s != null -> {
                 headerTitle.text = subTitle(s)
@@ -414,41 +538,23 @@ class MainActivity : Activity() {
             }
             view == "today" -> {
                 headerTitle.text = "Today"
-                val done = Store.completionsOn(Dates.today())
-                val total = done + Store.state.tasks.count { it.dueDate == Dates.today() || Dates.isOverdue(it) }
-                val planned = Store.state.tasks.filter { it.dueDate == Dates.today() }.sumOf { it.durationMin ?: 0 }
-                headerSub.text = Dates.fmtDay(Dates.today()) + " · $done done · ${total - done} to go" +
-                    (if (planned > 0) " · ⏱ ${planned}m planned" else "") + " · 🔥 ${Store.currentStreak()} day streak"
-                headerProgWrap.visibility = View.VISIBLE
-                val pct = if (total > 0) done.toFloat() / total else 0f
-                // Batch 9 (P2-10) — sweep the fill from its current width
-                // instead of snapping, so completing a task visibly moves it.
-                headerProgWrap.post {
-                    val target = (headerProgWrap.width * pct).toInt()
-                    val from = headerProg.width
-                    if (from == target) {
-                        headerProg.layoutParams = FrameLayout.LayoutParams(target, -1)
-                    } else {
-                        ValueAnimator.ofInt(from, target).apply {
-                            duration = 300
-                            interpolator = sheetEase
-                            addUpdateListener { headerProg.layoutParams = FrameLayout.LayoutParams(it.animatedValue as Int, -1) }
-                            start()
-                        }
-                    }
-                }
+                // Todoist shows a plain muted sub-count: "5 tasks" (§4).
+                val total = Store.state.tasks.count { it.dueDate == Dates.today() || Dates.isOverdue(it) }
+                headerSub.text = "$total tasks"
             }
             view == "inbox" -> {
                 headerTitle.text = "Inbox"
-                headerSub.text = "${Store.state.tasks.count { it.projectId == null }} tasks with no project"
+                headerSub.text = ""
             }
             view == "upcoming" -> {
                 headerTitle.text = "Upcoming"
-                headerSub.text = "${Store.state.tasks.count { it.dueDate != null && it.dueDate!! > Dates.today() }} future tasks"
+                headerSub.text = ""
             }
             else -> {
-                headerTitle.text = "Browse"
-                headerSub.text = "${Store.state.projects.size} projects · ${Store.state.tasks.size} open tasks"
+                // Browse has no title at all — it opens with the profile
+                // header instead, and render() hides this header there.
+                headerTitle.text = ""
+                headerSub.text = ""
             }
         }
     }
@@ -459,7 +565,7 @@ class MainActivity : Activity() {
         if (s.startsWith("label:")) return "@ " + (Store.state.labels.find { it.id == s.substring(6) }?.name ?: "")
         return mapOf(
             "calendar" to "Calendar", "ramble" to "Ramble", "assist" to "Task & Email Assist",
-            "history" to "History", "insights" to "Project Insights", "backups" to "Backups & Sync",
+            "history" to "History", "insights" to "Project Insights", "backups" to "Backups & Sync", "filterslabels" to "Filters & Labels",
             "stats" to "Productivity", "search" to "Search", "focus" to "Focus Timer",
             "smartplan" to "Smart Plan", "performance" to "Performance"
         )[s] ?: "GhostBlade Task"
@@ -467,21 +573,42 @@ class MainActivity : Activity() {
 
     private fun renderNav() {
         navBar.removeAllViews()
+        if (selectMode) { renderSelectBar(); return }
+        // Today's glyph embeds the current day number (ANALYSIS §0.4).
+        val todayNum = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH).toString()
         val items = listOf(
-            Triple("inbox", "📥", "Inbox"), Triple("today", "📅", "Today"),
-            Triple("upcoming", "🗓️", "Upcoming"), Triple("browse", "🔍", "Browse")
+            Triple("inbox", "▭", "Inbox"), Triple("today", todayNum, "Today"),
+            Triple("upcoming", "▦", "Upcoming"), Triple("browse", "☰", "Browse")
         )
         items.forEach { (v, ic, lbl) ->
             val on = sub == null && view == v
             val b = LinearLayout(this)
             b.orientation = LinearLayout.VERTICAL
-            b.gravity = Gravity.CENTER
-            b.setPadding(dp(14f), dp(7f), dp(14f), dp(7f))
-            if (on) b.background = Glass.chip(this, true)
+            b.gravity = Gravity.CENTER_HORIZONTAL
+            b.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
             b.contentDescription = lbl
-            val icT = tv(ic, 19f); icT.gravity = Gravity.CENTER
-            val lbT = tv(lbl, 11f, if (on) Glass.text(this@MainActivity) else Glass.muted(this@MainActivity), on); lbT.gravity = Gravity.CENTER
-            b.addView(icT); b.addView(lbT)
+            // Selected pill (#472524 oval, ~51x28dp) sits behind the ICON
+            // ONLY and crossfades/scales in — it never slides (K1b).
+            val pill = FrameLayout(this)
+            pill.layoutParams = LinearLayout.LayoutParams(dp(51f), dp(28f))
+            if (on) {
+                val pd = android.graphics.drawable.GradientDrawable()
+                pd.shape = android.graphics.drawable.GradientDrawable.OVAL
+                pd.setColor(TD_PILL)
+                pill.background = pd
+                pill.alpha = 0f
+                pill.scaleX = 0.9f; pill.scaleY = 0.9f
+                pill.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(190).start()
+            }
+            val icT = tv(ic, if (v == "today") 14f else 17f, if (on) TD_SALMON else TD_GREY, v == "today")
+            icT.gravity = Gravity.CENTER
+            icT.layoutParams = FrameLayout.LayoutParams(-1, -1)
+            pill.addView(icT)
+            b.addView(pill)
+            val lbT = tv(lbl, 12.5f, if (on) TD_SALMON else TD_GREY, false)
+            lbT.gravity = Gravity.CENTER
+            lbT.layoutParams = lp(t = dp(2f))
+            b.addView(lbT)
             b.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             b.setOnClickListener {
                 Sfx.nav()
@@ -491,64 +618,403 @@ class MainActivity : Activity() {
         }
     }
 
-    /* ---------------- task rows ---------------- */
+    /* ---------------- multi-select mode (B2) ---------------- */
 
-    private fun metaText(t: TaskItem): String {
-        val bits = mutableListOf<String>()
-        if (t.dueDate != null) {
-            bits.add(when {
-                Dates.isOverdue(t) -> "⚠ " + Dates.fmtDay(t.dueDate!!)
-                t.dueDate == Dates.today() -> "Today"
-                t.dueDate == Dates.addDays(Dates.today(), 1) -> "Tomorrow"
-                else -> Dates.fmtDay(t.dueDate!!)
-            })
+    /** Select-mode action bar replacing the bottom nav (VIDEO §3.7):
+     *  move to project / label / priority flag / delete, acting on the
+     *  selection through Store's bulk APIs. All actions sit dimmed at
+     *  0 selected, exactly as the recording shows. */
+    private fun renderSelectBar() {
+        val enabled = selectedIds.isNotEmpty()
+        val actions = listOf(
+            Triple("▣", "Project") { bulkChooseProject() },
+            Triple("▤", "Section") { bulkChooseSection() },
+            Triple("🏷", "Label") { bulkChooseLabel() },
+            Triple("⚑", "Priority") { bulkChoosePriority() },
+            Triple("🗑", "Delete") { bulkDeleteSelected() }
+        )
+        actions.forEach { (icon, lbl, act) ->
+            val b = LinearLayout(this)
+            b.orientation = LinearLayout.VERTICAL
+            b.gravity = Gravity.CENTER_HORIZONTAL
+            b.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
+            b.alpha = if (enabled) 1f else 0.4f
+            b.contentDescription = lbl
+            val icT = tv(icon, 17f, if (enabled) Glass.text(this@MainActivity) else TD_GREY)
+            icT.gravity = Gravity.CENTER
+            b.addView(icT)
+            val lbT = tv(lbl, 12.5f, if (enabled) Glass.text(this@MainActivity) else TD_GREY)
+            lbT.gravity = Gravity.CENTER
+            lbT.layoutParams = lp(t = dp(2f))
+            b.addView(lbT)
+            b.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            b.setOnClickListener { if (enabled) act() else toast("Select a task first") }
+            navBar.addView(b)
         }
-        if (t.dueTime != null) bits.add("🕐 " + t.dueTime)
-        if (t.recurrence != null) bits.add("🔁")
-        if (t.durationMin != null) bits.add("⏱ " + t.durationMin + "m")
-        val p = Store.state.projects.find { it.id == t.projectId }
-        if (p != null) bits.add("#" + p.name)
-        t.labelIds.forEach { id -> Store.state.labels.find { it.id == id }?.let { bits.add("@" + it.name) } }
-        if (t.subtasks.isNotEmpty()) bits.add("☰ " + t.subtasks.count { it.done } + "/" + t.subtasks.size)
-        if (t.priority < 4) bits.add("P" + t.priority)
-        if (t.reminderOffsetMin != null) bits.add("🔔")
-        if (t.locLat != null) bits.add("📍")
-        return bits.joinToString("   ")
     }
 
-    private fun taskRow(t: TaskItem): LinearLayout {
+    /** Chrome-only crossfade (~180ms total): header + nav fade out, the
+     *  mode flips and everything re-renders, chrome fades back in. The
+     *  list content is never animated (VIDEO §3.7). */
+    private fun crossfadeChrome(flip: () -> Unit) {
+        headerHolder.animate().alpha(0f).setDuration(90).start()
+        navBar.animate().alpha(0f).setDuration(90).withEndAction {
+            flip()
+            render()
+            headerHolder.animate().alpha(1f).setDuration(90).start()
+            navBar.animate().alpha(1f).setDuration(90).start()
+        }.start()
+    }
+
+    private fun enterSelectMode() {
+        if (selectMode) return
+        crossfadeChrome { selectMode = true; selectedIds.clear() }
+    }
+
+    private fun exitSelectMode() {
+        if (!selectMode) return
+        crossfadeChrome { selectMode = false; selectedIds.clear() }
+    }
+
+    private fun toggleSelected(id: String) {
+        if (id in selectedIds) selectedIds.remove(id) else selectedIds.add(id)
+        Sfx.tick()
+        render()
+    }
+
+    private fun bulkChooseProject() {
+        val names = listOf("Inbox") + Store.state.projects.map { it.name }
+        val ids = listOf<String?>(null) + Store.state.projects.map { it.id }
+        AlertDialog.Builder(this).setTitle("Move to project")
+            .setItems(names.toTypedArray()) { _, w ->
+                Store.bulkMoveToProject(selectedIds, ids[w])
+                toast("Moved ${selectedIds.size} task(s)")
+                exitSelectMode()
+            }.show()
+    }
+
+    /** Move-to-section for the multi-select bar (Correction Round 2,
+     *  F-2): gives Store.bulkSetSection its UI caller. Sections belong to
+     *  one project, so the picker only opens when the whole selection
+     *  sits in a single project that has sections. */
+    private fun bulkChooseSection() {
+        val pids = Store.state.tasks.filter { it.id in selectedIds }.map { it.projectId }.distinct()
+        if (pids.size != 1 || pids[0] == null) {
+            toast("Pick tasks from a single project to set a section")
+            return
+        }
+        val secs = Store.state.sections.filter { it.projectId == pids[0] }.sortedBy { it.order }
+        if (secs.isEmpty()) {
+            toast("This project has no sections yet — add one from the project menu")
+            return
+        }
+        val names = listOf("No section") + secs.map { it.name }
+        val ids = listOf<String?>(null) + secs.map { it.id }
+        AlertDialog.Builder(this).setTitle("Move to section")
+            .setItems(names.toTypedArray()) { _, w ->
+                Store.bulkSetSection(selectedIds, ids[w])
+                toast("Section set for ${selectedIds.size} task(s)")
+                exitSelectMode()
+            }.show()
+    }
+
+    private fun bulkChooseLabel() {
+        if (Store.state.labels.isEmpty()) {
+            promptText("Label name:") { name ->
+                val l = Store.labelByName(name)
+                Store.bulkAddLabel(selectedIds, l.id)
+                Store.save()
+                toast("Labelled ${selectedIds.size} task(s)")
+                exitSelectMode()
+            }
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Add label")
+            .setItems(Store.state.labels.map { "@" + it.name }.toTypedArray()) { _, w ->
+                Store.bulkAddLabel(selectedIds, Store.state.labels[w].id)
+                toast("Labelled ${selectedIds.size} task(s)")
+                exitSelectMode()
+            }.show()
+    }
+
+    private fun bulkChoosePriority() {
+        AlertDialog.Builder(this).setTitle("Set priority")
+            .setItems(arrayOf("Priority 1", "Priority 2", "Priority 3", "Priority 4")) { _, w ->
+                Store.bulkSetPriority(selectedIds, w + 1)
+                toast("Priority set for ${selectedIds.size} task(s)")
+                exitSelectMode()
+            }.show()
+    }
+
+    private fun bulkDeleteSelected() {
+        val removed = Store.bulkDelete(selectedIds)
+        if (removed.isEmpty()) return
+        selectMode = false
+        selectedIds.clear()
+        render()
+        // Undo bar for the bulk delete (Store returned the removed tasks).
+        undoBar.removeAllViews()
+        val lbl = tv("Deleted ${removed.size} task(s)", 13f)
+        lbl.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
+        undoBar.addView(lbl)
+        val btn = tv("UNDO", 15f, Glass.gold(this@MainActivity), true)
+        btn.setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+        btn.setOnClickListener {
+            removed.forEach { t ->
+                Store.state.tasks.add(t)
+                Reminders.sync(this, t); Reminders.syncGeo(this, t)
+            }
+            Store.save()
+            undoBar.visibility = View.GONE
+            render(); toast("Restored ↩️")
+        }
+        undoBar.addView(btn)
+        undoHide?.let { handler.removeCallbacks(it) }
+        undoHide = Runnable { undoBar.visibility = View.GONE }
+        undoBar.visibility = View.VISIBLE
+        handler.postDelayed(undoHide!!, 5000)
+    }
+
+    /* ---------------- task rows ---------------- */
+
+    /* ---------------- Todoist row helpers (B1) ---------------- */
+
+    private fun roundedRect(color: Int, radiusDp: Float, strokeColor: Int? = null): android.graphics.drawable.GradientDrawable {
+        val g = android.graphics.drawable.GradientDrawable()
+        g.setColor(color)
+        g.cornerRadius = dp(radiusDp).toFloat()
+        if (strokeColor != null) g.setStroke(dp(1f), strokeColor)
+        return g
+    }
+
+    private fun ovalDrawable(color: Int): android.graphics.drawable.GradientDrawable {
+        val g = android.graphics.drawable.GradientDrawable()
+        g.shape = android.graphics.drawable.GradientDrawable.OVAL
+        g.setColor(color)
+        return g
+    }
+
+    private fun hairline(): View {
+        val v = View(this)
+        v.setBackgroundColor(0xFF1F1F1F.toInt())
+        v.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f)))
+        return v
+    }
+
+    /** P1 ring is ALWAYS Todoist red — never the user accent (binding
+     *  Monitoring correction; Ui.kt's checkCircle follows the accent). */
+    private fun priorityColor(pr: Int): Int = when (pr) {
+        1 -> 0xFFE44332.toInt()
+        2 -> 0xFFFF9F0A.toInt()
+        3 -> 0xFF4A90D9.toInt()
+        else -> TD_GREY
+    }
+
+    /** 22dp circle, 3dp ring (2dp for P4) with a faint priority-tinted fill
+     *  inside for P1–P3 (ANALYSIS §1). Filled = solid priority colour. */
+    private fun checkDrawable(priority: Int, filled: Boolean): android.graphics.drawable.GradientDrawable {
+        val g = android.graphics.drawable.GradientDrawable()
+        g.shape = android.graphics.drawable.GradientDrawable.OVAL
+        val c = priorityColor(priority)
+        if (filled) {
+            g.setColor(c)
+        } else {
+            if (priority in 1..3) {
+                g.setColor(android.graphics.Color.argb(52, android.graphics.Color.red(c), android.graphics.Color.green(c), android.graphics.Color.blue(c)))
+            } else {
+                g.setColor(android.graphics.Color.TRANSPARENT)
+            }
+            g.setStroke(dp(if (priority == 4) 2f else 3f), c)
+        }
+        return g
+    }
+
+    /** "Nov 20" — the meta-line / overdue date format. */
+    private fun fmtMonDay(s: String): String {
+        return try {
+            val mon = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+            val c = Dates.parse(s)
+            mon[c.get(java.util.Calendar.MONTH)] + " " + c.get(java.util.Calendar.DAY_OF_MONTH)
+        } catch (e: Exception) { s }
+    }
+
+    /** "Friday, Nov 20" — the Todoist date-section header format. */
+    private fun fmtDayLong(s: String): String {
+        return try {
+            val days = arrayOf("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+            val c = Dates.parse(s)
+            days[Dates.jsDayOfWeek(c)] + ", " + fmtMonDay(s)
+        } catch (e: Exception) { s }
+    }
+
+    /** Semantic date colours: green Today / amber Tomorrow / salmon
+     *  overdue / grey for none + future (binding correction). */
+    private fun dateColorFor(t: TaskItem): Int = when {
+        t.dueDate == null -> TD_GREY
+        Dates.isOverdue(t) -> TD_SALMON
+        t.dueDate == Dates.today() -> TD_GREEN
+        t.dueDate == Dates.addDays(Dates.today(), 1) -> TD_AMBER
+        else -> TD_GREY
+    }
+
+    private fun dateWordFor(t: TaskItem): String = when {
+        t.dueDate == null -> ""
+        Dates.isOverdue(t) -> fmtMonDay(t.dueDate!!)
+        t.dueDate == Dates.today() -> "Today"
+        t.dueDate == Dates.addDays(Dates.today(), 1) -> "Tomorrow"
+        else -> fmtMonDay(t.dueDate!!)
+    }
+
+    /** Title at 17sp regular; a URL inside the title is underlined
+     *  (ANALYSIS §4 — the "(Watch)" link case). */
+    private fun titleView(t: TaskItem): TextView {
+        val v = tv(t.title, 17f)
+        val link = Regex("""(https?://|www\.)\S+""").find(t.title)
+        if (link != null) {
+            val sp = android.text.SpannableString(t.title)
+            sp.setSpan(android.text.style.UnderlineSpan(), link.range.first, link.range.last + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            v.text = sp
+        }
+        return v
+    }
+
+    /** Segmented meta line (ANALYSIS §1/§4): left = link icon, calendar
+     *  icon + semantically coloured date word, repeat icon (same colour),
+     *  then grey time / duration / labels / subtasks / reminder / location;
+     *  right = project path, right-aligned, ending in a trailing "#" — or
+     *  "Inbox" with a red tray glyph for project-less tasks. When
+     *  [iconOnly] is set and the task is due today, the date word is
+     *  dropped: icons only, in neutral grey. */
+    private fun buildMeta(t: TaskItem, showProject: Boolean, iconOnly: Boolean): LinearLayout? {
+        val hasDate = t.dueDate != null
+        val hasBits = hasDate || t.dueTime != null || t.durationMin != null ||
+            t.labelIds.isNotEmpty() || t.subtasks.isNotEmpty() || t.reminderOffsetMin != null || t.locLat != null
+        if (!hasBits && !showProject) return null
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val left = LinearLayout(this); left.orientation = LinearLayout.HORIZONTAL
+        left.gravity = Gravity.CENTER_VERTICAL
+        left.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        var first = true
+        fun gap(): Float = if (first) { first = false; 0f } else 8f
+        fun seg(text: String, color: Int, gapDp: Float) {
+            val s = tv(text, 13.5f, color)
+            if (gapDp > 0f) s.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(gapDp) }
+            left.addView(s)
+        }
+        if (t.title.contains("http") || t.notes.contains("http")) seg("🔗", TD_GREY, gap())
+        if (hasDate) {
+            val iconOnlyToday = iconOnly && t.dueDate == Dates.today()
+            val col = if (iconOnlyToday) TD_GREY else dateColorFor(t)
+            seg("▦", col, gap())
+            if (!iconOnlyToday) seg(dateWordFor(t), col, 4f)
+            if (t.recurrence != null) seg("↻", col, gap())
+        } else if (t.recurrence != null) {
+            seg("↻", TD_GREY, gap())
+        }
+        if (t.dueTime != null) seg(t.dueTime!!, TD_GREY, gap())
+        if (t.durationMin != null) seg("⏱ " + t.durationMin + "m", TD_GREY, gap())
+        t.labelIds.forEach { id -> Store.state.labels.find { it.id == id }?.let { seg("@" + it.name, TD_GREY, gap()) } }
+        if (t.subtasks.isNotEmpty()) seg("☰ " + t.subtasks.count { it.done } + "/" + t.subtasks.size, TD_GREY, gap())
+        if (t.reminderOffsetMin != null) seg("🔔", TD_GREY, gap())
+        if (t.locLat != null) seg("📍", TD_GREY, gap())
+        row.addView(left)
+        if (showProject) {
+            val pr = Store.state.projects.find { it.id == t.projectId }
+            val right = LinearLayout(this); right.orientation = LinearLayout.HORIZONTAL
+            right.gravity = Gravity.CENTER_VERTICAL
+            val nameT = tv(if (pr != null) pr.name + " " else "Inbox ", 13.5f, TD_GREY)
+            nameT.maxLines = 1
+            nameT.ellipsize = android.text.TextUtils.TruncateAt.END
+            nameT.maxWidth = dp(120f)
+            right.addView(nameT)
+            right.addView(tv(if (pr != null) "#" else "▭", 13.5f, if (pr != null) TD_GREY else TD_RED, pr != null))
+            row.addView(right)
+        }
+        return row
+    }
+
+    /** One task row with NO background/margin of its own — rows live inside
+     *  a grouped #282828 container (see groupedCard). */
+    private fun taskRowInner(t: TaskItem, showProject: Boolean, iconOnly: Boolean): LinearLayout {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        row.background = Glass.panel(this, 20f)
-        row.setPadding(dp(13f), dp(12f), dp(13f), dp(12f))
-        row.layoutParams = lp(b = dp(10f))
+        row.setPadding(dp(16f), dp(14f), dp(16f), dp(12f))
         row.gravity = Gravity.TOP
-
-        val check = tv("", 14f, 0xFFFFFFFF.toInt(), true)
+        val check = tv("", 12f, 0xFFFFFFFF.toInt(), true)
         check.gravity = Gravity.CENTER
-        check.background = Glass.checkCircle(this, t.priority, false)
-        check.contentDescription = "Complete task"
-        check.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f))
-        check.setOnClickListener { completeWithAnim(t, row, check) }
+        check.layoutParams = LinearLayout.LayoutParams(dp(22f), dp(22f))
+        if (selectMode) {
+            // Selection indicator replaces the completion circle: filled
+            // red with a ✓ when selected, plain grey ring when not.
+            val isSel = t.id in selectedIds
+            check.text = if (isSel) "✓" else ""
+            check.contentDescription = "Select task"
+            check.background = if (isSel) ovalDrawable(TD_RED) else {
+                val g = android.graphics.drawable.GradientDrawable()
+                g.shape = android.graphics.drawable.GradientDrawable.OVAL
+                g.setColor(android.graphics.Color.TRANSPARENT)
+                g.setStroke(dp(2f), TD_GREY)
+                g
+            }
+            check.setOnClickListener { toggleSelected(t.id) }
+        } else {
+            check.background = checkDrawable(t.priority, false)
+            check.contentDescription = "Complete task"
+            check.setOnClickListener { completeWithAnim(t, row, check) }
+        }
         row.addView(check)
-
         val body = LinearLayout(this)
         body.orientation = LinearLayout.VERTICAL
-        body.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(11f) }
-        val title = tv(t.title, 16f)
-        body.addView(title)
-        val meta = metaText(t)
-        if (meta.isNotEmpty()) {
-            val m = tv(meta, 13f, Glass.muted(this@MainActivity))
-            m.maxLines = 1
-            m.ellipsize = android.text.TextUtils.TruncateAt.END
-            m.layoutParams = lp(t = dp(3f))
-            body.addView(m)
+        body.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        body.addView(titleView(t))
+        if (t.notes.isNotBlank()) {
+            // Description preview: one muted line between title and meta.
+            val d = tv(t.notes.trim().lineSequence().firstOrNull() ?: "", 14f, 0xFFC8C8C8.toInt())
+            d.maxLines = 1
+            d.ellipsize = android.text.TextUtils.TruncateAt.END
+            d.layoutParams = lp(t = dp(2f))
+            body.addView(d)
         }
-        body.setOnClickListener { openEditor(t.id) }
+        val meta = buildMeta(t, showProject, iconOnly)
+        if (meta != null) {
+            meta.layoutParams = lp(t = dp(6f))
+            body.addView(meta)
+        }
+        body.setOnClickListener { if (selectMode) toggleSelected(t.id) else openEditor(t.id) }
         row.addView(body)
         attachPressFx(row)
         return row
+    }
+
+    /** The grouped container: one flat #282828 surface, radius on the
+     *  group's outer corners only, hairline separators between rows,
+     *  no per-row margins (ANALYSIS §1 — the core structural pattern). */
+    private fun groupedCard(tasks: List<TaskItem>, showProject: Boolean, iconOnlyFor: (TaskItem) -> Boolean): LinearLayout {
+        val g = LinearLayout(this)
+        g.orientation = LinearLayout.VERTICAL
+        g.background = roundedRect(TD_CARD, 14f)
+        g.layoutParams = lp(b = dp(10f))
+        tasks.forEachIndexed { i, t ->
+            if (i > 0) {
+                val h = hairline()
+                h.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f))).apply { leftMargin = dp(16f); rightMargin = dp(16f) }
+                g.addView(h)
+            }
+            g.addView(taskRowInner(t, showProject, iconOnlyFor(t)))
+        }
+        return g
+    }
+
+    /** Standalone row for the remaining single-row callers (Search results,
+     *  Calendar day list): the same anatomy in its own one-row group. */
+    private fun taskRow(t: TaskItem): LinearLayout {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.background = roundedRect(TD_CARD, 14f)
+        wrap.layoutParams = lp(b = dp(10f))
+        wrap.addView(taskRowInner(t, showProject = false, iconOnly = false))
+        return wrap
     }
 
     private fun attachPressFx(v: View) {
@@ -565,11 +1031,14 @@ class MainActivity : Activity() {
     }
 
     private fun completeWithAnim(t: TaskItem, row: View, check: TextView) {
-        // Re-entry guard: a fast double-tap during the ~420ms exit animation
-        // used to complete a recurring task twice (two stats records, two
-        // interval advances). The checkbox is dead until the row is gone.
+        // Re-entry guard: a fast double-tap during the feedback window used
+        // to complete a recurring task twice. The checkbox is dead until
+        // the completion lands.
         check.isEnabled = false
-        check.background = Glass.checkCircle(this, t.priority, true)
+        // Feedback is ONLY the subtle priority-coloured fill: the reference
+        // recording contains no completion animation at all (COMPARE K8),
+        // so no slide/fade-out is invented here.
+        check.background = checkDrawable(t.priority, true)
         check.text = "✓"
         Sfx.complete()
         if (Build.VERSION.SDK_INT >= 26) {
@@ -578,24 +1047,253 @@ class MainActivity : Activity() {
                 vib?.vibrate(android.os.VibrationEffect.createOneShot(15, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
             } catch (e: Exception) {}
         }
-        row.animate().alpha(0f).translationX(dp(40f).toFloat()).setDuration(300).setStartDelay(120)
-            .withEndAction {
-                val msg = Store.completeTask(t.id)
-                if (msg.isNotEmpty()) toast(msg)
-                render()
-            }.start()
+        handler.postDelayed({
+            val msg = Store.completeTask(t.id)
+            if (msg.isNotEmpty()) toast(msg)
+            render()
+        }, 260)
+    }
+
+    /* ---------------- display pipeline (DisplayEngine wiring) -------- */
+
+    private fun displayKey(): String = sub ?: view
+
+    private fun buildDisplayFilter(key: String): DisplayFilter {
+        val today = Dates.today()
+        var from: String? = null; var to: String? = null
+        when (dispDate[key] ?: "All") {
+            "Today" -> { from = today; to = today }
+            "Tomorrow" -> { from = Dates.addDays(today, 1); to = Dates.addDays(today, 1) }
+            "Overdue" -> { to = Dates.addDays(today, -1) }
+            "Upcoming" -> { from = Dates.addDays(today, 1) }
+        }
+        // Label rides the engine's DisplayFilter.labelIds (Correction
+        // Round 1, R1-2). Assignee deliberately stays state-only: the
+        // engine predicate exists, but no task in this single-user app
+        // carries an assignee value, so applying "Me" would filter out
+        // every (unassigned) task — Todoist's row default is "Me and
+        // unassigned", which is exactly the no-op. See TEAMONE-IMPL-B2.
+        val labelIds = dispLabel[key]?.let { setOf(it) } ?: emptySet()
+        return DisplayFilter(from, to, dispPrio[key] ?: emptySet(), labelIds)
+    }
+
+    /** Filter then sort, both through Team Two's DisplayEngine. MANUAL
+     *  keeps the app's standard task order; every other mode — SMART
+     *  included — goes through DisplayEngine.sortTasks (Team Two
+     *  addendum item 2: no local SMART overlay remains). */
+    private fun applyDisplay(list: List<TaskItem>, key: String): List<TaskItem> {
+        var out = list
+        if ((dispDate[key] ?: "All") == "No date") out = out.filter { it.dueDate == null }
+        else out = DisplayEngine.applyFilter(out, buildDisplayFilter(key))
+        val mode = dispSortFor(key)
+        out = if (mode == SortMode.MANUAL) Store.sortTasks(out) else DisplayEngine.sortTasks(out, mode)
+        return out
+    }
+
+    /** Project path shows on cross-project views (Today/Upcoming/filters/
+     *  labels) but not in Inbox or inside the project itself (A6). */
+    private fun showProjectForList(): Boolean = when {
+        sub == null && view == "inbox" -> false
+        sub?.startsWith("project:") == true -> false
+        else -> true
+    }
+
+    private fun sectionHeader(text: String): TextView {
+        val l = tv(text, 16.5f, Glass.text(this@MainActivity), true)
+        l.layoutParams = lp(t = dp(20f), b = dp(8f))
+        return l
+    }
+
+    /** Completed-tasks group for the Display sheet's toggle. Completions
+     *  keep only a title/date, so these rows are read-only. */
+    private fun completedGroup(dateFilter: String?) {
+        val comps = Store.state.completions.filter { dateFilter == null || it.date == dateFilter }.take(20)
+        if (comps.isEmpty()) return
+        content.addView(sectionHeader("Completed"))
+        val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
+        g.background = roundedRect(TD_CARD, 14f); g.layoutParams = lp(b = dp(10f))
+        comps.forEachIndexed { i, c ->
+            if (i > 0) {
+                val h = hairline()
+                h.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f))).apply { leftMargin = dp(16f); rightMargin = dp(16f) }
+                g.addView(h)
+            }
+            val r = LinearLayout(this); r.orientation = LinearLayout.HORIZONTAL
+            r.setPadding(dp(16f), dp(12f), dp(16f), dp(12f)); r.gravity = Gravity.CENTER_VERTICAL
+            val ck = tv("✓", 11f, 0xFFFFFFFF.toInt(), true); ck.gravity = Gravity.CENTER
+            ck.background = checkDrawable(4, true); ck.layoutParams = LinearLayout.LayoutParams(dp(22f), dp(22f))
+            r.addView(ck)
+            val tt = tv(c.title, 15f, TD_GREY)
+            tt.paintFlags = tt.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+            tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+            r.addView(tt)
+            g.addView(r)
+        }
+        content.addView(g)
     }
 
     private fun renderTaskList(list: List<TaskItem>, emoji: String, emptyText: String) {
-        if (list.isEmpty()) content.addView(emptyView(emoji, emptyText))
-        else list.forEach { content.addView(taskRow(it)) }
+        val key = displayKey()
+        val l = applyDisplay(list, key)
+        if (l.isEmpty()) {
+            content.addView(emptyView(emoji, emptyText))
+        } else {
+            val gm = dispGroupFor(key)
+            if (gm == GroupMode.NONE) {
+                content.addView(groupedCard(l, showProjectForList()) { false })
+            } else {
+                DisplayEngine.groupTasks(Store.state, l, gm).forEach { grp ->
+                    if (grp.title.isNotEmpty()) content.addView(sectionHeader(grp.title))
+                    content.addView(groupedCard(grp.tasks, showProjectForList()) { false })
+                }
+            }
+        }
+        if (dispShowFor(key)) completedGroup(null)
+    }
+
+    /* ---------------- project sections (Correction Round 2, F-2) ----- */
+
+    /** Collapsible section header for the project view: chevron + name +
+     *  "— N" count (reference shape, ANALYSIS F24) and a ⋮ menu wired to
+     *  the Store's rename/delete. Tapping the row toggles collapse via
+     *  Store.setSectionCollapsed. */
+    private fun sectionGroupHeader(sec: SectionItem, count: Int): View {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.layoutParams = lp(t = dp(18f), b = dp(8f))
+        row.setPadding(dp(2f), dp(4f), dp(2f), dp(4f))
+        val chev = tv(if (sec.collapsed) "▸" else "▾", 14f, Glass.muted(this@MainActivity), true)
+        chev.gravity = Gravity.CENTER
+        chev.layoutParams = LinearLayout.LayoutParams(dp(22f), -2)
+        row.addView(chev)
+        row.addView(tv(sec.name, 16.5f, Glass.text(this@MainActivity), true))
+        row.addView(tv(" — $count", 14f, Glass.muted(this@MainActivity)))
+        val spacer = View(this); spacer.layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        row.addView(spacer)
+        val dots = tv("⋮", 17f, Glass.muted(this@MainActivity), true)
+        dots.setPadding(dp(10f), dp(2f), dp(4f), dp(2f))
+        dots.contentDescription = "Section options"
+        dots.setOnClickListener { sectionMenu(sec) }
+        row.addView(dots)
+        row.setOnClickListener {
+            Sfx.tick()
+            Store.setSectionCollapsed(sec.id, !sec.collapsed)
+            render()
+        }
+        return row
+    }
+
+    private fun sectionMenu(sec: SectionItem) {
+        AlertDialog.Builder(this).setTitle(sec.name)
+            .setItems(arrayOf("Rename section", "Delete section")) { _, w ->
+                when (w) {
+                    0 -> promptText("Section name:") { name ->
+                        if (name.isNotBlank()) { Store.renameSection(sec.id, name.trim()); render() }
+                    }
+                    1 -> {
+                        Store.deleteSection(sec.id)
+                        toast("Section deleted — its tasks stay in the project")
+                        render()
+                    }
+                }
+            }.show()
+    }
+
+    /** Project list grouped by section: unsectioned tasks first with no
+     *  header (the reference project screen shows the loose task above
+     *  the first section), then each section in its saved order with a
+     *  collapsible header. Display filters/sorts still apply; the
+     *  Completed group still follows when the Display toggle is on. */
+    private fun renderProjectSections(p: ProjectItem, tasks: List<TaskItem>) {
+        val key = displayKey()
+        val secs = Store.state.sections.filter { it.projectId == p.id }.sortedBy { it.order }
+        val l = applyDisplay(tasks, key)
+        if (l.isEmpty() && secs.isEmpty()) {
+            content.addView(emptyView("📁", "No open tasks in this project."))
+            return
+        }
+        val secIds = secs.map { it.id }.toSet()
+        val unsectioned = l.filter { it.sectionId == null || it.sectionId !in secIds }
+        if (unsectioned.isNotEmpty()) content.addView(groupedCard(unsectioned, false) { false })
+        secs.forEach { sec ->
+            val mine = l.filter { it.sectionId == sec.id }
+            content.addView(sectionGroupHeader(sec, mine.size))
+            if (!sec.collapsed && mine.isNotEmpty()) content.addView(groupedCard(mine, false) { false })
+        }
+        if (dispShowFor(key)) completedGroup(null)
+    }
+
+    /* ---------------- Today ---------------- */
+
+    /** The Overdue block shared by Today and Upcoming: header row with the
+     *  salmon Reschedule action + collapse chevron, then the grouped rows. */
+    private fun addOverdueSection() {
+        val key = displayKey()
+        val overdue = applyDisplay(Store.state.tasks.filter { Dates.isOverdue(it) }, key)
+        if (overdue.isEmpty()) return
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.layoutParams = lp(t = dp(16f), b = dp(8f))
+        val title = tv("Overdue", 16.5f, Glass.text(this@MainActivity), true)
+        title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        head.addView(title)
+        val resched = tv("Reschedule", 15.5f, TD_SALMON, false)
+        resched.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        resched.contentDescription = "Reschedule all overdue tasks to today"
+        resched.setOnClickListener {
+            val prev = Store.rescheduleOverdue()
+            if (prev.isNotEmpty()) {
+                lastReschedule = prev
+                toast("Rescheduled ${prev.size} task(s) to today")
+                showRescheduleUndo(prev)
+                render()
+            }
+        }
+        head.addView(resched)
+        val chev = tv(if (todayOverdueCollapsed) "⌄" else "∧", 18f, Glass.text(this@MainActivity))
+        chev.setPadding(dp(12f), dp(4f), dp(2f), dp(4f))
+        chev.contentDescription = "Collapse Overdue section"
+        chev.setOnClickListener { todayOverdueCollapsed = !todayOverdueCollapsed; render() }
+        head.addView(chev)
+        content.addView(head)
+        if (!todayOverdueCollapsed) content.addView(groupedCard(overdue, true) { false })
+    }
+
+    private fun showRescheduleUndo(prev: List<Pair<String, String?>>) {
+        undoBar.removeAllViews()
+        val lbl = tv("Rescheduled ${prev.size} overdue task(s)", 13f)
+        lbl.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
+        undoBar.addView(lbl)
+        val btn = tv("UNDO", 15f, Glass.gold(this@MainActivity), true)
+        btn.setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+        btn.setOnClickListener {
+            Store.restoreDueDates(prev)
+            lastReschedule = null
+            undoBar.visibility = View.GONE
+            render(); toast("Undone ↩️")
+        }
+        undoBar.addView(btn)
+        undoHide?.let { handler.removeCallbacks(it) }
+        undoHide = Runnable { undoBar.visibility = View.GONE }
+        undoBar.visibility = View.VISIBLE
+        handler.postDelayed(undoHide!!, 5000)
     }
 
     private fun renderToday() {
-        content.addView(briefCard())
-        val list = Store.sortTasks(Store.state.tasks.filter { it.dueDate == Dates.today() || Dates.isOverdue(it) })
-        if (list.isEmpty()) content.addView(emptyView("🎉", "All clear for today.\nTap + to add a task — try \"Gym tomorrow at 7am every day\"."))
-        else list.forEach { content.addView(taskRow(it)) }
+        addOverdueSection()
+        val key = displayKey()
+        val todayList = applyDisplay(Store.state.tasks.filter { it.dueDate == Dates.today() }, key)
+        val hasOverdue = Store.state.tasks.any { Dates.isOverdue(it) }
+        if (todayList.isEmpty() && !hasOverdue) {
+            content.addView(emptyView("🎉", "All clear for today.\nTap + to add a task — try \"Gym tomorrow at 7am every day\"."))
+            return
+        }
+        if (todayList.isNotEmpty()) {
+            content.addView(sectionHeader(fmtDayLong(Dates.today())))
+            // Tasks due today show the icon-only grey meta form (§4).
+            content.addView(groupedCard(todayList, true) { true })
+        }
+        if (dispShowFor(key)) completedGroup(Dates.today())
     }
 
     private fun briefCard(): LinearLayout {
@@ -623,21 +1321,123 @@ class MainActivity : Activity() {
         return c
     }
 
+    /* ---------------- Upcoming + week strip ---------------- */
+
+    private fun mondayOf(dateStr: String): String {
+        val c = Dates.parse(dateStr)
+        val sinceMonday = (c.get(java.util.Calendar.DAY_OF_WEEK) - java.util.Calendar.MONDAY + 7) % 7
+        c.add(java.util.Calendar.DAY_OF_MONTH, -sinceMonday)
+        return Dates.dstr(c)
+    }
+
+    /** One Mon–Sun strip row: grey weekday letters; numbers grey in the
+     *  past, white in the future; today = white bold number inside a solid
+     *  #D04349 circle; a small grey dot under days that have tasks (not
+     *  under today — R0-7 nuance). */
+    private fun weekStripRow(monday: String): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val letters = listOf("M", "T", "W", "T", "F", "S", "S")
+        val today = Dates.today()
+        for (i in 0 until 7) {
+            val ds = Dates.addDays(monday, i)
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.gravity = Gravity.CENTER_HORIZONTAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val lt = tv(letters[i], 13f, TD_GREY); lt.gravity = Gravity.CENTER
+            colL.addView(lt)
+            val isToday = ds == today
+            val isPast = ds < today
+            val numWrap = FrameLayout(this)
+            numWrap.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { topMargin = dp(4f) }
+            if (isToday) numWrap.background = ovalDrawable(TD_RED)
+            val num = tv(Dates.parse(ds).get(java.util.Calendar.DAY_OF_MONTH).toString(), 17f,
+                if (isPast && !isToday) TD_GREY else 0xFFFFFFFF.toInt(), isToday)
+            num.gravity = Gravity.CENTER
+            num.layoutParams = FrameLayout.LayoutParams(-1, -1)
+            numWrap.addView(num)
+            colL.addView(numWrap)
+            val hasTasks = Store.state.tasks.any { it.dueDate == ds }
+            val dot = View(this)
+            dot.layoutParams = LinearLayout.LayoutParams(dp(5f), dp(5f)).apply { topMargin = dp(6f) }
+            if (hasTasks && !isToday) dot.background = ovalDrawable(TD_GREY)
+            colL.addView(dot)
+            val dd = ds
+            colL.setOnClickListener { Sfx.tick(); toast(fmtDayLong(dd) + " · " + Store.state.tasks.count { it.dueDate == dd } + " task(s)") }
+            row.addView(colL)
+        }
+        return row
+    }
+
     private fun renderUpcoming() {
-        val fut = Store.sortTasks(Store.state.tasks.filter { it.dueDate != null && it.dueDate!! > Dates.today() })
-        if (fut.isEmpty()) {
+        val today = Dates.today()
+        // Month selector — the title turns RED while the strip is expanded
+        // and its chevron flips (COMPARE K4).
+        val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val monAbbr = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val nowC = Dates.parse(today)
+        val mRow = LinearLayout(this); mRow.orientation = LinearLayout.HORIZONTAL
+        mRow.gravity = Gravity.CENTER_VERTICAL
+        mRow.layoutParams = lp(t = dp(4f), b = dp(10f))
+        val mCol = if (upcomingExpanded) TD_RED else Glass.text(this@MainActivity)
+        val mt = tv(monthNames[nowC.get(java.util.Calendar.MONTH)] + " " + nowC.get(java.util.Calendar.YEAR), 17f, mCol, true)
+        mRow.addView(mt)
+        val mChev = tv(if (upcomingExpanded) "▲" else "▼", 12f, mCol)
+        mChev.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6f) }
+        mRow.addView(mChev)
+        mRow.setOnClickListener { upcomingExpanded = !upcomingExpanded; render() }
+        content.addView(mRow)
+        val monday = mondayOf(today)
+        if (!upcomingExpanded) {
+            content.addView(weekStripRow(monday))
+            // Centred drag handle: the affordance that opens the stream.
+            val handleWrap = LinearLayout(this); handleWrap.orientation = LinearLayout.VERTICAL
+            handleWrap.gravity = Gravity.CENTER_HORIZONTAL
+            val handle = View(this)
+            handle.background = roundedRect(0xFF595959.toInt(), 2f)
+            handle.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(4f)).apply { topMargin = dp(10f); bottomMargin = dp(10f) }
+            handleWrap.addView(handle)
+            handleWrap.setOnClickListener { upcomingExpanded = true; render() }
+            content.addView(handleWrap)
+            content.addView(hairline())
+        } else {
+            // Expanded: a continuous stream of week rows that scrolls with
+            // the page (Nov 16 → Dec 20 in the reference), with an inline
+            // red month tag when the month changes.
+            var lastMonth = -1
+            for (w in 0 until 5) {
+                val wkMonday = Dates.addDays(monday, w * 7)
+                val mo = Dates.parse(wkMonday).get(java.util.Calendar.MONTH)
+                if (mo != lastMonth) {
+                    lastMonth = mo
+                    if (w > 0) {
+                        val tag = tv(monAbbr[mo], 13f, TD_SALMON, true)
+                        tag.layoutParams = lp(t = dp(10f), b = dp(2f))
+                        content.addView(tag)
+                    }
+                }
+                content.addView(weekStripRow(wkMonday))
+            }
+            content.addView(hairline())
+        }
+        addOverdueSection()
+        val key = displayKey()
+        val dated = Store.state.tasks.filter { it.dueDate != null && it.dueDate!! >= today }
+            .groupBy { it.dueDate!! }.toSortedMap()
+        if (dated.isEmpty() && Store.state.tasks.none { Dates.isOverdue(it) }) {
             content.addView(emptyView("🗓️", "Nothing coming up yet."))
             return
         }
-        var last = ""
-        fut.forEach { t ->
-            if (t.dueDate != last) {
-                last = t.dueDate!!
-                val lbl = Dates.fmtDay(last) + if (last == Dates.addDays(Dates.today(), 1)) " · Tomorrow" else ""
-                content.addView(dayGroup(lbl.uppercase()))
+        dated.forEach { (ds, tasks) ->
+            val suffix = when (ds) {
+                today -> " • Today"
+                Dates.addDays(today, 1) -> " • Tomorrow"
+                else -> ""
             }
-            content.addView(taskRow(t))
+            content.addView(sectionHeader(fmtDayLong(ds) + suffix))
+            val sorted = applyDisplay(tasks, key)
+            if (sorted.isNotEmpty()) content.addView(groupedCard(sorted, true) { it.dueDate == today })
         }
+        if (dispShowFor(key)) completedGroup(today)
     }
 
     /* ---------------- browse ---------------- */
@@ -662,52 +1462,263 @@ class MainActivity : Activity() {
         return row
     }
 
+    /* ---------------- Browse helpers (B1) ---------------- */
+
+    /** One grouped #282828 container with hairline separators — the Browse
+     *  groups are single cards, not separate rows (ANALYSIS §6). */
+    private fun groupedMenuCard(rows: List<View>): LinearLayout {
+        val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
+        g.background = roundedRect(TD_CARD, 14f)
+        g.layoutParams = lp(b = dp(10f))
+        rows.forEachIndexed { i, r ->
+            if (i > 0) {
+                val h = hairline()
+                h.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f))).apply { leftMargin = dp(20f) }
+                g.addView(h)
+            }
+            g.addView(r)
+        }
+        return g
+    }
+
+    private fun browseRow(icon: String, iconColor: Int, title: String, rightText: String?, click: () -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(20f), dp(16f), dp(20f), dp(16f))
+        val ic = tv(icon, 20f, iconColor)
+        ic.layoutParams = LinearLayout.LayoutParams(dp(40f), -2)
+        row.addView(ic)
+        val tt = tv(title, 16f)
+        tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        row.addView(tt)
+        if (rightText != null) row.addView(tv(rightText, 14f, TD_GREY))
+        row.setOnClickListener { Sfx.tap(); click() }
+        attachPressFx(row)
+        return row
+    }
+
     private fun renderBrowse() {
-        content.addView(menuItem("🔍", "Search tasks", "Find anything, fast", null) { sub = "search"; render() })
-        content.addView(dayGroup("PROJECTS"))
-        if (Store.state.projects.isEmpty()) content.addView(tv("No projects yet — add one with #Name in Quick Add.", 13f, Glass.muted(this@MainActivity)))
-        Store.state.projects.forEach { p ->
-            val n = Store.state.tasks.count { it.projectId == p.id }
-            content.addView(menuItem("📁", p.name, "$n open tasks", null) { sub = "project:" + p.id; render() })
+        // Profile header (ANALYSIS §6): avatar with a karma progress arc,
+        // name at 20sp bold, bell + gear at the right. No "Browse" title.
+        val prof = LinearLayout(this); prof.orientation = LinearLayout.HORIZONTAL
+        prof.gravity = Gravity.CENTER_VERTICAL
+        prof.setPadding(dp(8f), dp(8f), dp(8f), dp(12f))
+        val avatarWrap = FrameLayout(this)
+        avatarWrap.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f)).apply { rightMargin = dp(12f) }
+        val ring = FocusRing(this)
+        ring.ringColor = TD_SALMON
+        ring.trackColor = android.graphics.Color.argb(60, 255, 255, 255)
+        ring.fraction = Karma.levelFor(Store.state.karmaPoints).progress
+        ring.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        avatarWrap.addView(ring)
+        val av = tv("S", 17f, 0xFFFFFFFF.toInt(), true); av.gravity = Gravity.CENTER
+        av.background = ovalDrawable(0xFF3A3A44.toInt())
+        av.layoutParams = FrameLayout.LayoutParams(dp(34f), dp(34f)).apply { gravity = Gravity.CENTER }
+        avatarWrap.addView(av)
+        prof.addView(avatarWrap)
+        val nm = tv("Shadow", 20f, Glass.text(this@MainActivity), true)
+        nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        prof.addView(nm)
+        val bell = tv("🔔", 20f); bell.gravity = Gravity.CENTER
+        bell.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        bell.contentDescription = "Activity"
+        bell.setOnClickListener { sub = "history"; render() }
+        prof.addView(bell)
+        val gear = tv("⚙", 22f); gear.gravity = Gravity.CENTER
+        gear.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        gear.contentDescription = "Settings"
+        gear.setOnClickListener { showSheet(appearanceCard()) }
+        prof.addView(gear)
+        content.addView(prof)
+        content.addView(hairline())
+
+        // Emphasis slot (#363636 — the old Try Pro banner's fill): the
+        // Morning Brief / Smart Plan card lives here now (§15.3/§15.6).
+        val brief = LinearLayout(this); brief.orientation = LinearLayout.VERTICAL
+        brief.background = roundedRect(TD_EMPHASIS, 14f)
+        brief.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        brief.layoutParams = lp(t = dp(12f), b = dp(10f))
+        val hh2 = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val greet = if (hh2 < 12) "Good morning" else if (hh2 < 17) "Good afternoon" else "Good evening"
+        brief.addView(tv("$greet, Sir", 16f, Glass.text(this@MainActivity), true))
+        val over = Store.state.tasks.count { Dates.isOverdue(it) }
+        val todayN = Store.state.tasks.count { it.dueDate == Dates.today() }
+        val bsub = tv("$todayN tasks scheduled today" + if (over > 0) " · $over overdue" else " · nothing overdue", 13f, TD_GREY)
+        bsub.layoutParams = lp(t = dp(4f))
+        brief.addView(bsub)
+        val brow = LinearLayout(this); brow.orientation = LinearLayout.HORIZONTAL
+        brow.layoutParams = lp(t = dp(10f))
+        val plan = ghostBtn("🤖 Smart plan my day") { sub = "smartplan"; render() }
+        plan.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8f) }
+        val focus = ghostBtn("🎯 Focus timer") { sub = "focus"; render() }
+        focus.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        brow.addView(plan); brow.addView(focus)
+        brief.addView(brow)
+        content.addView(brief)
+
+        // Primary group — red outline icons.
+        content.addView(groupedMenuCard(listOf(
+            browseRow("⌕", TD_RED, "Search", null) { sub = "search"; render() },
+            browseRow("▦", TD_RED, "Filters & Labels", null) { sub = "filterslabels"; render() },
+            browseRow("◉", TD_RED, "Reporting", null) { sub = "history"; render() }
+        )))
+
+        // My Projects: header with + and collapse chevron, grouped rows
+        // with right-aligned counts, then Manage projects.
+        val mpHead = LinearLayout(this); mpHead.orientation = LinearLayout.HORIZONTAL
+        mpHead.gravity = Gravity.CENTER_VERTICAL
+        mpHead.layoutParams = lp(t = dp(14f), b = dp(8f))
+        val mpT = tv("My Projects", 17f, Glass.text(this@MainActivity), true)
+        mpT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        mpHead.addView(mpT)
+        val mpAdd = tv("+", 22f, Glass.text(this@MainActivity))
+        mpAdd.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
+        mpAdd.contentDescription = "New project"
+        mpAdd.setOnClickListener { promptText("Project name:") { name -> Store.projByName(name); Store.save(); render() } }
+        mpHead.addView(mpAdd)
+        val mpChev = tv(if (browseProjectsCollapsed) "⌄" else "∧", 18f, Glass.text(this@MainActivity))
+        mpChev.setPadding(dp(6f), dp(2f), dp(2f), dp(2f))
+        mpChev.setOnClickListener { browseProjectsCollapsed = !browseProjectsCollapsed; render() }
+        mpHead.addView(mpChev)
+        content.addView(mpHead)
+        if (!browseProjectsCollapsed) {
+            val rows = mutableListOf<View>()
+            if (Store.state.projects.isEmpty()) {
+                rows.add(browseRow("#", TD_GREY, "No projects yet — tap + to add one", null) {})
+            }
+            Store.state.projects.forEach { pr ->
+                val n = Store.state.tasks.count { it.projectId == pr.id }
+                rows.add(browseRow("#", TD_GREY, pr.name, n.toString()) { sub = "project:" + pr.id; render() })
+            }
+            rows.add(browseRow("✎", Glass.text(this@MainActivity), "Manage projects", null) { showSheet(buildManageProjectsSheet()) })
+            content.addView(groupedMenuCard(rows))
         }
-        content.addView(menuItem("➕", "New project", null, null) { promptText("Project name:") { name -> Store.projByName(name); Store.save(); render() } })
+
+        // Secondary group — grey-white icons (the red→grey hierarchy shift).
+        content.addView(groupedMenuCard(listOf(
+            browseRow("◎", Glass.text(this@MainActivity), "Add a team", null) {
+                toast("Teams need an account — GhostBlade is fully offline, so this stays local-only")
+            },
+            browseRow("▤", Glass.text(this@MainActivity), "Browse templates", null) { showSheet(buildTemplatesSheet()) },
+            browseRow("?", Glass.text(this@MainActivity), "Help & resources", null) { showSheet(buildHelpSheet()) }
+        )))
+
+        // More tools — formerly the "PRO — ALL UNLOCKED" group; the PRO
+        // tags are gone because every feature ships unlocked.
+        content.addView(dayGroup("MORE"))
+        val more = listOf(
+            Triple("calendar", "🗓️", "Calendar view"),
+            Triple("stats", "📈", "Productivity"),
+            Triple("performance", "📊", "Performance"),
+            Triple("insights", "💡", "Project insights"),
+            Triple("ramble", "🎙️", "Ramble"),
+            Triple("assist", "🤖", "Task & Email Assist"),
+            Triple("backups", "💾", "Backups & Sync")
+        )
+        content.addView(groupedMenuCard(more.map { (k, ic, n) ->
+            browseRow(ic, Glass.text(this@MainActivity), n, null) { sub = k; render() }
+        }))
+        content.addView(appearanceCard())
+        val about = LinearLayout(this); about.orientation = LinearLayout.VERTICAL
+        about.background = roundedRect(TD_CARD, 14f)
+        about.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        about.layoutParams = lp(b = dp(10f))
+        about.addView(tv("GhostBlade Task", 16f, Glass.text(this@MainActivity), true))
+        val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, TD_GREY)
+        ab.layoutParams = lp(t = dp(4f))
+        about.addView(ab)
+        content.addView(about)
+    }
+
+    /** Combined Filters & Labels screen behind the Browse row of that
+     *  name (ANALYSIS §6): the old separate Browse groups, regrouped. */
+    private fun renderFiltersLabels() {
         content.addView(dayGroup("FILTERS"))
+        val frows = mutableListOf<View>()
         Store.state.filters.forEach { f ->
-            content.addView(menuItem("🔎", f.name, f.query, null) { sub = "filter:" + f.id; render() })
+            frows.add(browseRow("🔎", TD_RED, f.name, null) { sub = "filter:" + f.id; render() })
         }
-        content.addView(menuItem("➕", "New filter", "e.g. today & p1, #Work, @home, no date", null) {
+        frows.add(browseRow("+", Glass.text(this@MainActivity), "New filter", null) {
             promptText("Filter name:") { name ->
                 promptText("Filter query:") { q ->
                     Store.state.filters.add(FilterItem(uid(), name, q)); Store.save(); render()
                 }
             }
         })
+        content.addView(groupedMenuCard(frows))
         content.addView(dayGroup("LABELS"))
-        if (Store.state.labels.isEmpty()) content.addView(tv("Tag any task with @label in Quick Add — e.g. \"Call mom @family\".", 13f, Glass.muted(this@MainActivity)))
+        if (Store.state.labels.isEmpty()) {
+            content.addView(tv("Tag any task with @label in Quick Add — e.g. \"Call mom @family\".", 13f, Glass.muted(this@MainActivity)))
+        }
+        val lrows = mutableListOf<View>()
         Store.state.labels.forEach { l ->
             val n = Store.state.tasks.count { it.labelIds.contains(l.id) }
-            content.addView(menuItem("🏷️", "@" + l.name, "$n open tasks", null) { sub = "label:" + l.id; render() })
+            lrows.add(browseRow("🏷️", TD_RED, "@" + l.name, n.toString()) { sub = "label:" + l.id; render() })
         }
-        content.addView(dayGroup("PRO — ALL UNLOCKED"))
-        val pro = listOf(
-            arrayOf("calendar", "🗓️", "Calendar view", "Month grid of your tasks"),
-            arrayOf("focus", "🎯", "Focus timer", "Pomodoro countdown for any task"),
-            arrayOf("stats", "📈", "Productivity", "Streak, weekly chart, totals"),
-            arrayOf("performance", "📊", "Performance", "7d · 30d · 2m · 1y — done vs missed, streak rate"),
-            arrayOf("insights", "💡", "Project insights", "Progress & trends per project"),
-            arrayOf("history", "🕘", "Full history", "Every creation & completion"),
-            arrayOf("ramble", "🎙️", "Ramble", "Speak or type many tasks at once"),
-            arrayOf("assist", "🤖", "Task & Email Assist", "Paste text → tasks · break tasks down"),
-            arrayOf("backups", "💾", "Backups & Sync", "Auto snapshots · sync file · export · restore")
-        )
-        pro.forEach { (k, ic, n, d) -> content.addView(menuItem(ic, n, d, "PRO") { sub = k; render() }) }
-        content.addView(appearanceCard())
-        val about = card()
-        about.addView(tv("GhostBlade Task", 16f, Glass.text(this@MainActivity), true))
-        val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, Glass.muted(this@MainActivity))
-        ab.layoutParams = lp(t = dp(4f))
-        about.addView(ab)
-        content.addView(about)
+        if (lrows.isNotEmpty()) content.addView(groupedMenuCard(lrows))
+    }
+
+    private fun buildManageProjectsSheet(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Manage projects", 17f, Glass.text(this@MainActivity), true))
+        if (Store.state.projects.isEmpty()) col.addView(tv("No projects yet.", 13f, Glass.muted(this@MainActivity)))
+        Store.state.projects.forEach { pr ->
+            val n = Store.state.tasks.count { it.projectId == pr.id }
+            val row = tv("#  " + pr.name + "  ·  $n open tasks", 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener { closeSheet(); sub = "project:" + pr.id; render() }
+            col.addView(row)
+        }
+        val add = ghostBtn("＋ New project") {
+            promptText("Project name:") { name -> Store.projByName(name); Store.save(); closeSheet(); render() }
+        }
+        add.layoutParams = lp(t = dp(10f))
+        col.addView(add)
+        return col
+    }
+
+    private fun buildTemplatesSheet(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Browse templates", 17f, Glass.text(this@MainActivity), true))
+        val note = tv("Templates live on this device only (offline rule). Tap one to create its project.", 13f, Glass.muted(this@MainActivity))
+        note.layoutParams = lp(t = dp(4f), b = dp(6f))
+        col.addView(note)
+        if (Store.state.templates.isEmpty()) col.addView(tv("No templates yet — save a project as a template below.", 13f, Glass.muted(this@MainActivity)))
+        Store.state.templates.forEach { tpl ->
+            val row = tv("▤  " + tpl.name + "  →  " + tpl.projectName, 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener {
+                val np = Store.applyTemplate(tpl.id)
+                closeSheet()
+                if (np != null) { sub = "project:" + np.id; toast("Project created from template") }
+                render()
+            }
+            col.addView(row)
+        }
+        Store.state.projects.forEach { pr ->
+            val save = ghostBtn("Save “" + pr.name + "” as template") {
+                promptText("Template name:") { name ->
+                    Store.saveProjectAsTemplate(pr.id, name)
+                    toast("Template saved")
+                    showSheet(buildTemplatesSheet())
+                }
+            }
+            save.layoutParams = lp(t = dp(8f))
+            col.addView(save)
+        }
+        return col
+    }
+
+    private fun buildHelpSheet(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Help & resources", 17f, Glass.text(this@MainActivity), true))
+        val t1 = tv("GhostBlade Task is fully offline: no account, no internet permission, no tracking. Your tasks, comments and backups never leave this device.", 14f, Glass.muted(this@MainActivity))
+        t1.layoutParams = lp(t = dp(6f))
+        col.addView(t1)
+        val t2 = tv("Quick Add understands plain words: \"Gym tomorrow at 7am every day p1 #Health @home\". Type !! for priority, # for a project. The Display icon at the top right changes layout, grouping, sorting and filters for each list.", 14f, Glass.muted(this@MainActivity))
+        t2.layoutParams = lp(t = dp(6f))
+        col.addView(t2)
+        return col
     }
 
     private fun appearanceCard(): LinearLayout {
@@ -715,13 +1726,13 @@ class MainActivity : Activity() {
         c.addView(tv("🪟 Appearance", 16f, Glass.text(this@MainActivity), true))
         c.addView(label("Theme"))
         val tRow = LinearLayout(this); tRow.orientation = LinearLayout.HORIZONTAL
-        listOf("aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
+        listOf("todoist" to "✓ Todoist", "aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
             val ch = chipBtn(l, Prefs.theme(this) == v) { Prefs.set(this, "theme", v); applyTheme() }
             ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
             tRow.addView(ch)
         }
         c.addView(tRow)
-        val tNote = tv("Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 13f, Glass.muted(this@MainActivity))
+        val tNote = tv("Todoist = flat dark (the default) · Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 13f, Glass.muted(this@MainActivity))
         tNote.layoutParams = lp(t = dp(4f), b = dp(2f))
         c.addView(tNote)
         c.addView(label("Glass style"))
@@ -820,11 +1831,22 @@ class MainActivity : Activity() {
         wallpaperHolder.addView(Glass.wallpaperView(this), FrameLayout.LayoutParams(-1, -1))
     }
 
-    /** Status bar follows the theme: dark icons on the white frost theme. */
+    /** Status bar follows the theme: dark icons on the white frost theme;
+     *  in the Todoist theme the status bar is the screen colour #212121
+     *  (TEAMONE-IMPL-A note for B2). */
     private fun applyStatusBar() {
         val white = Glass.isWhite(this)
-        window.statusBarColor = if (white) 0xFFF2F2F6.toInt() else 0xFF06060A.toInt()
-        window.navigationBarColor = if (white) 0xFFF2F2F6.toInt() else 0xFF06060A.toInt()
+        val todoist = Glass.isTodoist(this)
+        window.statusBarColor = when {
+            white -> 0xFFF2F2F6.toInt()
+            todoist -> Todoist.BG
+            else -> 0xFF06060A.toInt()
+        }
+        window.navigationBarColor = when {
+            white -> 0xFFF2F2F6.toInt()
+            todoist -> Todoist.NAV
+            else -> 0xFF06060A.toInt()
+        }
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (white) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0
     }
@@ -833,8 +1855,8 @@ class MainActivity : Activity() {
      *  change; screens and sheets pick the theme up as they render. */
     private fun applyTheme() {
         refreshWallpaper()
-        headerCard.background = Glass.panel(this, 26f)
-        navBar.background = Glass.panel(this, 34f, strong = true)
+        headerCard.background = null
+        navBar.setBackgroundColor(TD_NAV)
         undoBar.background = Glass.panel(this, 22f, strong = true)
         applyStatusBar()
         render()
@@ -897,6 +1919,7 @@ class MainActivity : Activity() {
     private fun renderSub(s: String) {
         when {
             s.startsWith("project:") -> {
+                boardMode = dispLayoutFor(s) == "board"
                 val p = Store.state.projects.find { it.id == s.substring(8) }
                 if (p == null) { content.addView(emptyView("📁", "Project not found.")); return }
                 val toggle = LinearLayout(this); toggle.orientation = LinearLayout.HORIZONTAL
@@ -908,8 +1931,17 @@ class MainActivity : Activity() {
                 content.addView(toggle)
                 if (boardMode) renderBoard(p)
                 else {
-                    val list = Store.sortTasks(Store.state.tasks.filter { it.projectId == p.id })
-                    renderTaskList(list, "📁", "No open tasks in this project.")
+                    val projTasks = Store.state.tasks.filter { it.projectId == p.id }
+                    // Sections own the manual grouping (Correction Round 2,
+                    // F-2): when the project has sections and the Display
+                    // sheet's grouping is None, render by section; any other
+                    // Display grouping keeps the standard pipeline.
+                    val hasSections = Store.state.sections.any { it.projectId == p.id }
+                    if (hasSections && dispGroupFor(displayKey()) == GroupMode.NONE) {
+                        renderProjectSections(p, projTasks)
+                    } else {
+                        renderTaskList(Store.sortTasks(projTasks), "📁", "No open tasks in this project.")
+                    }
                 }
             }
             s.startsWith("filter:") -> {
@@ -943,6 +1975,7 @@ class MainActivity : Activity() {
                 }
                 content.addView(del)
             }
+            s == "filterslabels" -> renderFiltersLabels()
             s == "search" -> renderSearch()
             s == "calendar" -> renderCalendar()
             s == "focus" -> renderFocus()
@@ -994,6 +2027,407 @@ class MainActivity : Activity() {
         inputE.setSelection(inputE.text.length)
     }
 
+    /* ---------------- overflow menu / comments (B1) ---------------- */
+
+    private fun currentListTasks(): List<TaskItem> = when {
+        sub?.startsWith("project:") == true -> Store.state.tasks.filter { it.projectId == sub!!.substring(8) }
+        sub == null && view == "inbox" -> Store.state.tasks.filter { it.projectId == null }
+        sub == null && view == "today" -> Store.state.tasks.filter { it.dueDate == Dates.today() || Dates.isOverdue(it) }
+        else -> Store.state.tasks
+    }
+
+    private fun copyToClipboard(labelText: String, text: String) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText(labelText, text))
+    }
+
+    /** Per-view ⋮ contents (COMPARE F2): Inbox gets the full 6 actions;
+     *  Today gets only Select tasks / View activity. The menu is an
+     *  anchored system popup under the ⋮ button. */
+    private fun showOverflowMenu(anchor: View) {
+        val pm = android.widget.PopupMenu(this, anchor)
+        val isProject = sub?.startsWith("project:") == true
+        val isToday = sub == null && view == "today"
+        val isInbox = sub == null && view == "inbox"
+        var nextId = 1
+        val ids = mutableMapOf<Int, String>()
+        fun add(action: String, labelText: String) {
+            pm.menu.add(0, nextId, 0, labelText); ids[nextId] = action; nextId++
+        }
+        if (isToday) {
+            add("select", "Select tasks"); add("activity", "View activity")
+        } else if (isInbox || isProject) {
+            add("section", "Add section")
+            add("copy", if (isProject) "Copy link to project" else "Copy link to Inbox")
+            add("select", "Select tasks")
+            add("email", if (isProject) "Email tasks" else "Email tasks to Inbox")
+            add("comments", "Comments")
+            add("activity", "View activity")
+        } else {
+            add("select", "Select tasks"); add("activity", "View activity")
+        }
+        pm.setOnMenuItemClickListener { item ->
+            when (ids[item.itemId]) {
+                "section" -> {
+                    if (isProject) {
+                        val pid = sub!!.substring(8)
+                        promptText("Section name:") { name -> Store.addSection(pid, name); toast("Section added"); render() }
+                    } else {
+                        // Store sections are project-scoped only, so the
+                        // closest faithful Inbox behaviour (B2): pick the
+                        // target project first, then name the section.
+                        if (Store.state.projects.isEmpty()) {
+                            toast("Create a project first — sections live inside projects")
+                        } else {
+                            AlertDialog.Builder(this).setTitle("Add section to…")
+                                .setItems(Store.state.projects.map { "# " + it.name }.toTypedArray()) { _, w ->
+                                    val pr = Store.state.projects[w]
+                                    promptText("Section name:") { name ->
+                                        Store.addSection(pr.id, name)
+                                        toast("Section added to #" + pr.name)
+                                    }
+                                }.show()
+                        }
+                    }
+                }
+                "copy" -> {
+                    val link = if (isProject) "ghostblade://project/" + sub!!.substring(8) else "ghostblade://inbox"
+                    copyToClipboard("GhostBlade link", link); toast("Link copied")
+                }
+                "select" -> enterSelectMode()
+                "email" -> {
+                    // Offline equivalent of Todoist's email-the-list action.
+                    val text = currentListTasks().joinToString("\n") { "• " + it.title }
+                    copyToClipboard("GhostBlade tasks", text.ifEmpty { "No tasks" })
+                    toast("Tasks copied — paste them into any email")
+                }
+                "comments" -> showSheet(buildCommentsSheet(if (isProject) sub!!.substring(8) else null))
+                "activity" -> { sub = "history"; render() }
+            }
+            true
+        }
+        pm.show()
+    }
+
+    private fun buildCommentsSheet(projectId: String?): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Comments", 17f, Glass.text(this@MainActivity), true))
+        val comments = Store.commentsFor(projectId)
+        if (comments.isEmpty()) col.addView(tv("No comments yet. Add the first one below.", 13f, Glass.muted(this@MainActivity)))
+        comments.forEach { c ->
+            val r = LinearLayout(this); r.orientation = LinearLayout.VERTICAL
+            r.layoutParams = lp(t = dp(10f))
+            r.addView(tv(c.text, 15f))
+            val metaRow = LinearLayout(this); metaRow.orientation = LinearLayout.HORIZONTAL
+            val whenT = tv(fmtWhen(c.at), 13f, Glass.muted(this@MainActivity))
+            whenT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            metaRow.addView(whenT)
+            val del = tv("Delete", 13f, Glass.overdue(this@MainActivity))
+            del.setOnClickListener { Store.deleteComment(c.id); showSheet(buildCommentsSheet(projectId)) }
+            metaRow.addView(del)
+            r.addView(metaRow)
+            col.addView(r)
+        }
+        val add = accentBtn("＋ Add comment") {
+            promptText("Comment:") { text ->
+                Store.addComment(projectId, null, text)
+                showSheet(buildCommentsSheet(projectId))
+            }
+        }
+        add.layoutParams = lp(t = dp(14f))
+        col.addView(add)
+        return col
+    }
+
+    /* ---------------- Display sheet (B1) ---------------- */
+
+    /** Full-height, edge-to-edge sheet variant for Display (ANALYSIS §2:
+     *  it occupies the entire screen on a flat #212121, no scrim view of
+     *  the list behind it). Mirrors showSheet's bookkeeping. */
+    private fun showFullSheet(sheetContent: View) {
+        sheetGen++
+        sheetClosing = false
+        sheetIsQa = false
+        sheetRoot.removeAllViews()
+        val scrim = View(this)
+        scrim.setBackgroundColor(TD_BG)
+        sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.VERTICAL
+        panel.setBackgroundColor(TD_BG)
+        panel.setPadding(dp(20f), dp(10f), dp(20f), dp(16f))
+        panel.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        val handle = View(this)
+        val hg = android.graphics.drawable.GradientDrawable()
+        hg.cornerRadius = dp(2f).toFloat()
+        hg.setColor(0xFF595959.toInt())
+        handle.background = hg
+        handle.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(4f)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(12f)
+        }
+        panel.addView(handle)
+        val scroll = ScrollView(this)
+        scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+        scroll.addView(sheetContent)
+        panel.addView(scroll)
+        sheetRoot.addView(panel)
+        sheetRoot.visibility = View.VISIBLE
+        fabBtn.visibility = View.GONE
+        navBar.visibility = View.GONE
+        undoWasVisible = undoBar.visibility == View.VISIBLE
+        if (undoWasVisible) undoBar.visibility = View.GONE
+        Sfx.open()
+        panel.translationY = dp(40f).toFloat()
+        panel.alpha = 0.4f
+        panel.animate().translationY(0f).alpha(1f).setDuration(300).setInterpolator(sheetEase).start()
+    }
+
+    private fun showDisplaySheet() { showFullSheet(buildDisplaySheet()) }
+
+    /** Radio: ring with a centre dot when selected (ANALYSIS §2 — not a
+     *  filled circle). */
+    private fun radioView(on: Boolean): FrameLayout {
+        val wrap = FrameLayout(this)
+        wrap.layoutParams = LinearLayout.LayoutParams(dp(22f), dp(22f))
+        val ring = View(this)
+        val rd = android.graphics.drawable.GradientDrawable()
+        rd.shape = android.graphics.drawable.GradientDrawable.OVAL
+        rd.setColor(android.graphics.Color.TRANSPARENT)
+        rd.setStroke(dp(2f), if (on) TD_RED else TD_GREY)
+        ring.background = rd
+        ring.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        wrap.addView(ring)
+        if (on) {
+            val dot = View(this)
+            dot.background = ovalDrawable(TD_RED)
+            dot.layoutParams = FrameLayout.LayoutParams(dp(10f), dp(10f)).apply { gravity = Gravity.CENTER }
+            wrap.addView(dot)
+        }
+        return wrap
+    }
+
+    /** Switch: OFF = hollow track (transparent fill, grey outline) with a
+     *  solid light-grey knob at the left; ON = red track, white knob right. */
+    private fun switchView(on: Boolean): FrameLayout {
+        val wrap = FrameLayout(this)
+        wrap.layoutParams = LinearLayout.LayoutParams(dp(52f), dp(32f))
+        val track = View(this)
+        val td = android.graphics.drawable.GradientDrawable()
+        td.cornerRadius = dp(16f).toFloat()
+        if (on) td.setColor(TD_RED) else {
+            td.setColor(android.graphics.Color.TRANSPARENT)
+            td.setStroke(dp(2f), TD_GREY)
+        }
+        track.background = td
+        track.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        wrap.addView(track)
+        val knob = View(this)
+        knob.background = ovalDrawable(if (on) 0xFFFFFFFF.toInt() else 0xFFB0B0B0.toInt())
+        knob.layoutParams = FrameLayout.LayoutParams(dp(24f), dp(24f)).apply {
+            gravity = if (on) Gravity.CENTER_VERTICAL or Gravity.END else Gravity.CENTER_VERTICAL or Gravity.START
+            if (on) rightMargin = dp(4f) else leftMargin = dp(4f)
+        }
+        wrap.addView(knob)
+        return wrap
+    }
+
+    private fun displayRowCard(icon: String, labelText: String, value: String, click: () -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.background = roundedRect(TD_CARD, 14f)
+        row.setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+        row.layoutParams = lp(b = dp(8f))
+        val ic = tv(icon, 20f, Glass.text(this@MainActivity))
+        ic.layoutParams = LinearLayout.LayoutParams(dp(36f), -2)
+        row.addView(ic)
+        val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+        colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        colL.addView(tv(labelText, 16f))
+        colL.addView(tv(value, 14f, TD_GREY))
+        row.addView(colL)
+        row.setOnClickListener { click() }
+        attachPressFx(row)
+        return row
+    }
+
+    private fun buildDisplaySheet(): View {
+        val key = displayKey()
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        val titleRow = LinearLayout(this); titleRow.orientation = LinearLayout.HORIZONTAL
+        titleRow.gravity = Gravity.CENTER_VERTICAL
+        val dt = tv("Display", 24f, Glass.text(this@MainActivity), false)
+        dt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        titleRow.addView(dt)
+        val help = tv("?", 15f, Glass.text(this@MainActivity))
+        help.gravity = Gravity.CENTER
+        val hd = android.graphics.drawable.GradientDrawable()
+        hd.shape = android.graphics.drawable.GradientDrawable.OVAL
+        hd.setStroke(dp(1.5f), TD_GREY)
+        hd.setColor(android.graphics.Color.TRANSPARENT)
+        help.background = hd
+        help.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f))
+        help.setOnClickListener { toast("Layout, grouping, sorting and filters for this list. Every feature is unlocked.") }
+        titleRow.addView(help)
+        col.addView(titleRow)
+
+        // Layout — three visual options with mini phone mock-ups + radios.
+        val layLbl = tv("Layout", 17f, Glass.text(this@MainActivity), true)
+        layLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
+        col.addView(layLbl)
+        val layCard = LinearLayout(this); layCard.orientation = LinearLayout.HORIZONTAL
+        layCard.background = roundedRect(TD_CARD, 14f)
+        layCard.setPadding(dp(12f), dp(18f), dp(12f), dp(18f))
+        val curLayout = dispLayoutFor(key)
+        listOf("list" to "List", "board" to "Board", "calendar" to "Calendar").forEach { (v, lbl) ->
+            val on = curLayout == v
+            val opt = LinearLayout(this); opt.orientation = LinearLayout.VERTICAL
+            opt.gravity = Gravity.CENTER_HORIZONTAL
+            opt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val phone = FrameLayout(this)
+            val pd2 = android.graphics.drawable.GradientDrawable()
+            pd2.cornerRadius = dp(8f).toFloat()
+            pd2.setStroke(dp(2f), if (on) TD_RED else TD_GREY)
+            pd2.setColor(if (on) 0xFF3A2323.toInt() else android.graphics.Color.TRANSPARENT)
+            phone.background = pd2
+            phone.layoutParams = LinearLayout.LayoutParams(dp(34f), dp(62f))
+            val lines = LinearLayout(this); lines.orientation = LinearLayout.VERTICAL
+            lines.setPadding(dp(6f), dp(8f), dp(6f), dp(8f))
+            for (i in 0 until 3) {
+                val ln = View(this)
+                ln.background = roundedRect(if (on) TD_RED else TD_GREY, 2f)
+                ln.layoutParams = LinearLayout.LayoutParams(-1, dp(4f)).apply { bottomMargin = dp(5f) }
+                lines.addView(ln)
+            }
+            phone.addView(lines)
+            opt.addView(phone)
+            val lb = tv(lbl, 15f, if (on) TD_RED else Glass.text(this@MainActivity))
+            lb.layoutParams = lp(t = dp(8f), b = dp(8f))
+            opt.addView(lb)
+            opt.addView(radioView(on))
+            opt.setOnClickListener { setDispLayout(key, v); Sfx.tick(); showDisplaySheet() }
+            layCard.addView(opt)
+        }
+        col.addView(layCard)
+
+        // Completed tasks toggle (persisted per view — B2).
+        val compCard = LinearLayout(this); compCard.orientation = LinearLayout.HORIZONTAL
+        compCard.gravity = Gravity.CENTER_VERTICAL
+        compCard.background = roundedRect(TD_CARD, 14f)
+        compCard.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        compCard.layoutParams = lp(t = dp(10f))
+        val compIcon = tv("✓", 14f, Glass.text(this@MainActivity), true)
+        compIcon.gravity = Gravity.CENTER
+        val cd = android.graphics.drawable.GradientDrawable()
+        cd.shape = android.graphics.drawable.GradientDrawable.OVAL
+        cd.setStroke(dp(1.5f), TD_GREY)
+        cd.setColor(android.graphics.Color.TRANSPARENT)
+        compIcon.background = cd
+        compIcon.layoutParams = LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { rightMargin = dp(12f) }
+        compCard.addView(compIcon)
+        val compLbl = tv("Completed tasks", 16f)
+        compLbl.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        compCard.addView(compLbl)
+        compCard.addView(switchView(dispShowFor(key)))
+        compCard.setOnClickListener {
+            setDispShow(key, !dispShowFor(key))
+            Sfx.tick(); showDisplaySheet()
+        }
+        col.addView(compCard)
+
+        // Sort: Grouping + Sorting rows wired to DisplayEngine state.
+        val sortLbl = tv("Sort", 17f, Glass.text(this@MainActivity), true)
+        sortLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
+        col.addView(sortLbl)
+        val groupVal = when (dispGroupFor(key)) {
+            GroupMode.NONE -> "None"; GroupMode.DATE -> "Date"
+            GroupMode.PROJECT -> "Project"; GroupMode.PRIORITY -> "Priority"
+        }
+        col.addView(displayRowCard("▦", "Grouping", groupVal) {
+            val opts = arrayOf("None", "Date", "Project", "Priority")
+            AlertDialog.Builder(this).setTitle("Grouping").setItems(opts) { _, w ->
+                setDispGroup(key, listOf(GroupMode.NONE, GroupMode.DATE, GroupMode.PROJECT, GroupMode.PRIORITY)[w])
+                showDisplaySheet()
+            }.show()
+        })
+        val sortVal = when (dispSortFor(key)) {
+            SortMode.MANUAL -> "Manual"; SortMode.DATE -> "Date"
+            SortMode.PRIORITY -> "Priority"; SortMode.TITLE -> "Title"
+            SortMode.SMART -> "Smart"
+        }
+        col.addView(displayRowCard("⇅", "Sorting", sortVal) {
+            val opts = arrayOf("Manual", "Smart", "Date", "Priority", "Title")
+            AlertDialog.Builder(this).setTitle("Sorting").setItems(opts) { _, w ->
+                setDispSort(key, listOf(SortMode.MANUAL, SortMode.SMART, SortMode.DATE, SortMode.PRIORITY, SortMode.TITLE)[w])
+                showDisplaySheet()
+            }.show()
+        })
+
+        // Filter: Date + Priority on every list; Today adds Assignee + Label.
+        val filterLbl = tv("Filter", 17f, Glass.text(this@MainActivity), true)
+        filterLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
+        col.addView(filterLbl)
+        col.addView(displayRowCard("▤", "Date", dispDate[key] ?: "All") {
+            val opts = arrayOf("All", "Today", "Tomorrow", "Overdue", "Upcoming", "No date")
+            AlertDialog.Builder(this).setTitle("Date").setItems(opts) { _, w ->
+                dispDate[key] = opts[w]
+                showDisplaySheet()
+            }.show()
+        })
+        val prioSet = dispPrio[key] ?: emptySet()
+        val prioVal = if (prioSet.isEmpty()) "All" else prioSet.sorted().joinToString(", ") { "P$it" }
+        col.addView(displayRowCard("⚑", "Priority", prioVal) {
+            val items = arrayOf("Priority 1", "Priority 2", "Priority 3", "Priority 4")
+            val checked = BooleanArray(4) { (it + 1) in prioSet }
+            val temp = prioSet.toMutableSet()
+            AlertDialog.Builder(this).setTitle("Priority")
+                .setMultiChoiceItems(items, checked) { _, w, isChecked ->
+                    if (isChecked) temp.add(w + 1) else temp.remove(w + 1)
+                }
+                .setPositiveButton("Done") { _, _ -> dispPrio[key] = temp; showDisplaySheet() }
+                .setNegativeButton("Clear") { _, _ -> dispPrio[key] = mutableSetOf(); showDisplaySheet() }
+                .show()
+        })
+        if (key == "today") {
+            col.addView(displayRowCard("◉", "Assignee", dispAssignee[key] ?: "All") {
+                val opts = arrayOf("All", "Me", "Unassigned")
+                AlertDialog.Builder(this).setTitle("Assignee").setItems(opts) { _, w ->
+                    dispAssignee[key] = opts[w]
+                    showDisplaySheet()
+                }.show()
+            })
+            val labVal = dispLabel[key]?.let { id -> Store.state.labels.find { it.id == id }?.let { "@" + it.name } } ?: "All"
+            col.addView(displayRowCard("◈", "Label", labVal) {
+                val labelOpts = listOf("All") + Store.state.labels.map { "@" + it.name }
+                AlertDialog.Builder(this).setTitle("Label").setItems(labelOpts.toTypedArray()) { _, w ->
+                    if (w == 0) dispLabel.remove(key) else dispLabel[key] = Store.state.labels[w - 1].id
+                    showDisplaySheet()
+                }.show()
+            })
+        }
+
+        // Done — rounded-rectangle red button, bottom-right (not a pill).
+        val doneRow = LinearLayout(this); doneRow.orientation = LinearLayout.HORIZONTAL
+        doneRow.layoutParams = lp(t = dp(24f))
+        val spacer = View(this)
+        spacer.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        doneRow.addView(spacer)
+        val done = tv("Done", 15f, 0xFFFFFFFF.toInt(), false)
+        done.gravity = Gravity.CENTER
+        done.background = roundedRect(TD_RED, 10f)
+        done.layoutParams = LinearLayout.LayoutParams(dp(72f), dp(40f))
+        done.setOnClickListener {
+            when (dispLayoutFor(key)) {
+                "board" -> if (sub?.startsWith("project:") == true) boardMode = true
+                "list" -> boardMode = false
+                "calendar" -> { closeSheet(); sub = "calendar"; render(); return@setOnClickListener }
+            }
+            closeSheet(); render()
+        }
+        doneRow.addView(done)
+        col.addView(doneRow)
+        return col
+    }
+
     /* ---------------- sheets ---------------- */
 
     /** One blur+saturation frost effect (Android 12+ RenderEffect). */
@@ -1038,9 +2472,75 @@ class MainActivity : Activity() {
     private var sheetGen = 0
     private var sheetClosing = false
 
+    /** Quick Add presenter (B2, VIDEO §3.8): a FLOATING card — 12dp side
+     *  margins, all four corners rounded (~20dp), Todoist.SHEET fill —
+     *  that scales 0.9→1 + fades in over ~150ms above a scrim at
+     *  α≈0.50 (pixel-measured). No slide: the card materialises low and
+     *  grows into place while the IME rises beneath it. Framework note:
+     *  without AndroidX WindowInsetsAnimation the card cannot track the
+     *  IME frame-perfectly; it docks at the bottom with a 12dp margin
+     *  and the keyboard slides under it — the one documented motion
+     *  approximation (TEAMONE-ANALYSIS-VIDEO §6). */
+    private fun showQaSheet(sheetContent: View) {
+        sheetGen++
+        sheetClosing = false
+        sheetIsQa = true
+        sheetRoot.removeAllViews()
+        val scrim = View(this)
+        scrim.setBackgroundColor(0xFF000000.toInt())
+        scrim.alpha = 0f
+        scrim.setOnClickListener { attemptCloseSheet() }
+        sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.VERTICAL
+        panel.background = Glass.todoistSheetBg(this, 20f, Todoist.SHEET)
+        panel.setPadding(dp(18f), dp(10f), dp(18f), dp(16f))
+        val pp = FrameLayout.LayoutParams(-1, -2)
+        pp.gravity = Gravity.BOTTOM
+        pp.setMargins(dp(12f), 0, dp(12f), dp(12f))
+        panel.layoutParams = pp
+        Glass.elevate(this, panel, 20f, 24f)
+        val handleWrap = LinearLayout(this)
+        handleWrap.orientation = LinearLayout.VERTICAL
+        handleWrap.gravity = Gravity.CENTER_HORIZONTAL
+        val handle = Glass.dragHandle(this)
+        handle.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(4f)).apply { bottomMargin = dp(12f) }
+        handleWrap.addView(handle)
+        panel.addView(handleWrap)
+        val scroll = ScrollView(this)
+        scroll.layoutParams = LinearLayout.LayoutParams(-1, -2)
+        scroll.addView(sheetContent)
+        panel.addView(scroll)
+        sheetRoot.addView(panel)
+        sheetRoot.visibility = View.VISIBLE
+        fabBtn.visibility = View.GONE
+        navBar.visibility = View.GONE
+        undoWasVisible = undoBar.visibility == View.VISIBLE
+        if (undoWasVisible) undoBar.visibility = View.GONE
+        Sfx.open()
+        scrim.animate().alpha(0.5f).setDuration(150).start()
+        panel.scaleX = 0.9f; panel.scaleY = 0.9f; panel.alpha = 0f
+        panel.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(150)
+            .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+    }
+
+    /** Swap the Quick Add card's content with NO animation at all — the
+     *  one-frame in-place reset the send behaviour requires (VIDEO
+     *  §3.11), and the flicker-free path for popup picks / draft
+     *  restores while the card stays open. Falls back to the full
+     *  presenter when the QA card is not the open sheet. */
+    private fun refreshQaSheet() {
+        if (!sheetIsQa || sheetRoot.visibility != View.VISIBLE) { showQaSheet(buildQuickAdd()); return }
+        val panel = sheetRoot.getChildAt(1) as? LinearLayout ?: run { showQaSheet(buildQuickAdd()); return }
+        val scroll = panel.getChildAt(1) as? ScrollView ?: run { showQaSheet(buildQuickAdd()); return }
+        scroll.removeAllViews()
+        scroll.addView(buildQuickAdd())
+    }
+
     private fun showSheet(sheetContent: View) {
         sheetGen++
         sheetClosing = false
+        sheetIsQa = false
         sheetRoot.removeAllViews()
         val scrim = View(this)
         scrim.setBackgroundColor(if (Glass.isWhite(this)) 0x66020208 else 0xB3020208.toInt())
@@ -1100,6 +2600,7 @@ class MainActivity : Activity() {
 
     private fun finishCloseSheet() {
         sheetClosing = false
+        sheetIsQa = false
         sheetRoot.visibility = View.GONE
         sheetRoot.removeAllViews()
         fabBtn.visibility = View.VISIBLE
@@ -1134,7 +2635,7 @@ class MainActivity : Activity() {
     /** Return to the Quick Add root, dropping any stacked sub-sheets. */
     private fun returnToQuickAdd() {
         sheetStack.clear()
-        showSheet(buildQuickAdd())
+        showQaSheet(buildQuickAdd())
     }
 
     /** Back / scrim dismissal. If the editor is open with unsaved edits,
@@ -1181,6 +2682,21 @@ class MainActivity : Activity() {
     private var qaShowNotes = false
     private var qaLocLat: Double? = null
     private var qaLocLng: Double? = null
+    /** Deadline is a field SEPARATE from the due date (Team Two model):
+     *  set via the "+" popup / deadline chip, never via the Date chip. */
+    private var qaDeadline: String? = null
+    /** True while the date picker edits the deadline instead of the due date. */
+    private var qaPickingDeadline = false
+    /** Placeholder rotation (VIDEO §3.11): the example rotates PER SEND,
+     *  never per open. Pool = the two video-observed examples, the
+     *  screenshot example, and the app's original one. */
+    private val qaPlaceholders = listOf(
+        "e.g. Schedule review by Mar 15 at 11am p1",
+        "e.g. Replace lightbulb tomorrow at 3pm",
+        "e.g. Take kids to the park after work tomorrow",
+        "e.g. Fix bike tire this weekend"
+    )
+    private var qaPlaceholderIdx = 0
     private var qaCursor: java.util.Calendar = java.util.Calendar.getInstance()
     private var qaUpdating = false
     /** True when the currently open Quick Add sheet is showing a draft
@@ -1192,7 +2708,7 @@ class MainActivity : Activity() {
     private fun qaHasDraft(): Boolean =
         qaText.isNotBlank() || qaDate != null || qaTime != null || qaRecSet ||
         qaPriority != null || qaProjectSet || qaRemSet || qaLabelIds.isNotEmpty() ||
-        qaNotes.isNotBlank() || qaLocLat != null
+        qaNotes.isNotBlank() || qaLocLat != null || qaDeadline != null
 
     /** Reset every Quick Add field to a blank draft (Batch 9). */
     private fun clearQaDraft() {
@@ -1207,6 +2723,7 @@ class MainActivity : Activity() {
         qaLabelIds = mutableSetOf()
         qaNotes = ""; qaShowNotes = false
         qaLocLat = null; qaLocLng = null
+        qaDeadline = null; qaPickingDeadline = false
         qaCursor = java.util.Calendar.getInstance()
         qaDraftResumed = false
     }
@@ -1224,8 +2741,11 @@ class MainActivity : Activity() {
             qaDraftResumed = true
         } else {
             clearQaDraft()
+            // Customize Quick Add's "Show description" preference decides
+            // whether a fresh sheet opens with the description field.
+            qaShowNotes = Prefs.prefs(this).getBoolean("qa_show_desc", false)
         }
-        showSheet(buildQuickAdd())
+        showQaSheet(buildQuickAdd())
     }
 
     private fun qaPreviewParse(): Parser.Parsed {
@@ -1235,6 +2755,7 @@ class MainActivity : Activity() {
         if (qaRecSet) p.recurrence = qaRecurrence
         if (qaPriority != null) p.priority = qaPriority!!
         if (qaProjectSet && qaProjectId != null) p.projectName = Store.state.projects.find { it.id == qaProjectId }?.name
+        if (qaDeadline != null) p.deadline = qaDeadline
         return p
     }
 
@@ -1247,50 +2768,272 @@ class MainActivity : Activity() {
         return b
     }
 
+    /** Waveform glyph for the Ramble button: five white bars of varying
+     *  height centred in the red rounded square (ANALYSIS §11 — the
+     *  button carries a voice waveform, not a mic emoji). */
+    private fun waveformView(): View {
+        return object : View(this) {
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                paint.color = 0xFFFFFFFF.toInt()
+                paint.style = android.graphics.Paint.Style.FILL
+                val heights = floatArrayOf(0.36f, 0.62f, 1f, 0.62f, 0.36f)
+                val barW = width / 9f
+                val gap = barW * 0.8f
+                var x = (width - (barW * 5 + gap * 4)) / 2f
+                for (h in heights) {
+                    val bh = height * 0.56f * h
+                    val top = (height - bh) / 2f
+                    val rect = android.graphics.RectF(x, top, x + barW, top + bh)
+                    canvas.drawRoundRect(rect, barW / 2f, barW / 2f, paint)
+                    x += barW + gap
+                }
+            }
+        }
+    }
+
     private fun buildQuickAdd(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
         var notesIn: EditText? = null
-        val inp = input("e.g. Fix bike tire this weekend")
+        val showLabels = Prefs.prefs(this).getBoolean("qa_show_labels", true)
+        var dateChip: TextView? = null
+        var prioChip: TextView? = null
+        var projChip: TextView? = null
+        var rambleView: View? = null
+        var sendView: View? = null
+        var actionIsSend = qaText.isNotEmpty()
+        var popupKind: String? = null
+
+        // Borderless ~20sp multi-line field directly on the sheet
+        // (ANALYSIS §11 — the reference has no input box at all).
+        val inp = EditText(this)
+        inp.hint = qaPlaceholders[qaPlaceholderIdx % qaPlaceholders.size]
         inp.setText(qaText)
         inp.setSelection(inp.text.length)
-        // input row: text field + red send button beside it (Todoist layout)
-        val inputRow = LinearLayout(this); inputRow.orientation = LinearLayout.HORIZONTAL
-        inputRow.gravity = Gravity.CENTER_VERTICAL
-        inp.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8f) }
-        inputRow.addView(inp)
-        val send = tv("↑", 20f, 0xFFFFFFFF.toInt(), true)
-        send.gravity = Gravity.CENTER
-        send.background = Glass.accentGradient(this, 999f)
-        send.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
-        send.contentDescription = "Add task"
-        send.setOnClickListener { qaSubmit(inp, notesIn) }
-        inputRow.addView(send)
-        col.addView(inputRow)
-        val chips = tv("", 13f, Glass.muted(this@MainActivity))
-        chips.layoutParams = lp(b = dp(4f))
-        col.addView(chips)
-        val popupBox = LinearLayout(this); popupBox.orientation = LinearLayout.VERTICAL
-        popupBox.background = Glass.panel(this, 20f, strong = true)
-        popupBox.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
-        popupBox.layoutParams = lp(b = dp(8f))
-        popupBox.visibility = View.GONE
-        col.addView(popupBox)
+        inp.textSize = 20f
+        inp.setTextColor(Glass.text(this@MainActivity))
+        inp.setHintTextColor(Todoist.PLACEHOLDER)
+        inp.background = null
+        inp.setPadding(0, dp(2f), 0, dp(2f))
+        inp.gravity = Gravity.TOP
+        inp.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        inp.layoutParams = lp(b = dp(6f))
+        col.addView(inp)
+
+        // Parsed-token pill row (B2 item 1e). DOCUMENTED CHOICE: the
+        // framework EditText can carry BackgroundSpans, but re-spanning
+        // on every keystroke fights the IME's composition state and
+        // shifts offsets as tokens are consumed; the faithful, stable
+        // equivalent is a coloured pill row directly above the toolbar,
+        // fed by Team Two's Parser token ranges (R1-6). Picking P1 turns
+        // the text token into "!!1" and the row shows the red "!!1" pill
+        // while the Priority chip mirrors "P1" — the same information
+        // the reference renders inline.
+        val pillRow = LinearLayout(this); pillRow.orientation = LinearLayout.HORIZONTAL
+        pillRow.layoutParams = lp(b = dp(6f))
+        pillRow.visibility = View.GONE
+        col.addView(pillRow)
+
         if (qaShowNotes) {
             notesIn = input("Description / notes", qaNotes, multi = true)
             col.addView(notesIn)
         }
-        fun refreshChips() {
-            chips.text = Parser.describe(qaPreviewParse()).joinToString("   ") +
-                (if (qaRemSet) "   🔔" else "") + (if (qaLocLat != null) "   📍" else "") +
-                (if (qaLabelIds.isNotEmpty()) "   🏷️ " + qaLabelIds.size else "")
+
+        // Floating popup card host (priority / projects / "+" /
+        // attachment): Todoist.POPUP fill, sitting directly above the
+        // chip row, fade+scale ~120ms in (VIDEO §3.10).
+        val popupBox = LinearLayout(this); popupBox.orientation = LinearLayout.VERTICAL
+        popupBox.background = Glass.flatCard(this, 16f, Todoist.POPUP)
+        popupBox.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        popupBox.layoutParams = lp(b = dp(8f))
+        popupBox.visibility = View.GONE
+        Glass.elevate(this, popupBox, 16f, 10f)
+        col.addView(popupBox)
+
+        fun refreshDynamic() {
+            val parsed = qaPreviewParse()
+            pillRow.removeAllViews()
+            var anyPill = false
+            fun pill(labelText: String, color: Int) {
+                anyPill = true
+                val p = tv(labelText, 12.5f, color, true)
+                p.background = roundedRect(
+                    android.graphics.Color.argb(64, android.graphics.Color.red(color),
+                        android.graphics.Color.green(color), android.graphics.Color.blue(color)), 8f)
+                p.setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+                p.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+                pillRow.addView(p)
+            }
+            var hasPrioTok = false; var hasProjTok = false
+            for (t in Parser.parse(qaText).tokens) {
+                when (t.kind) {
+                    "priority" -> { hasPrioTok = true; pill(t.text, priorityColor(t.value.toIntOrNull() ?: 4)) }
+                    "project" -> { hasProjTok = true; pill(t.text, Glass.text(this@MainActivity)) }
+                    "date" -> pill(t.text, Todoist.DATE_TODAY)
+                    "deadline" -> pill(t.text, Todoist.SALMON)
+                    "recurrence" -> pill(t.text, Todoist.DATE_TOMORROW)
+                    "label" -> pill(t.text, TD_GREY)
+                }
+            }
+            if (qaPriority != null && !hasPrioTok) pill("P" + qaPriority, priorityColor(qaPriority!!))
+            if (qaProjectSet && !hasProjTok) pill(
+                "#" + (qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox"),
+                Glass.text(this@MainActivity))
+            if (qaDeadline != null) pill("⚑ Deadline " + fmtMonDay(qaDeadline!!), Todoist.SALMON)
+            if (qaRemSet) pill("🔔 Reminder", TD_GREY)
+            if (qaLocLat != null) pill("📍 Location", TD_GREY)
+            pillRow.visibility = if (anyPill) View.VISIBLE else View.GONE
+            // Parsed-date chip is GREEN — icon + label (ANALYSIS §11).
+            val effDate = qaDate ?: parsed.dueDate
+            dateChip?.let { chip ->
+                val lbl = when (effDate) {
+                    null -> "Date"
+                    Dates.today() -> "Today"
+                    Dates.addDays(Dates.today(), 1) -> "Tomorrow"
+                    else -> Dates.fmtDay(effDate!!)
+                }
+                chip.text = if (showLabels) "📅 $lbl" else "📅"
+                chip.setTextColor(if (effDate != null) Todoist.DATE_TODAY else Glass.text(this@MainActivity))
+            }
+            val effPrio = qaPriority ?: parsed.priority
+            prioChip?.let { chip ->
+                if (effPrio < 4) {
+                    chip.text = if (showLabels) "⚑ P$effPrio" else "⚑"
+                    chip.setTextColor(priorityColor(effPrio))
+                } else {
+                    chip.text = if (showLabels) "⚑ Priority" else "⚑"
+                    chip.setTextColor(Glass.text(this@MainActivity))
+                }
+            }
+            projChip?.let { chip ->
+                val nm = if (qaProjectSet) qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox"
+                    else parsed.projectName ?: "Inbox"
+                chip.text = if (showLabels) "▣ $nm" else "▣"
+            }
+            // Ramble ⇄ Send: swaps on the FIRST typed character, ~100ms
+            // crossfade, no size/shape change (VIDEO §3.9).
+            val hasText = qaText.isNotEmpty()
+            if (hasText != actionIsSend) {
+                actionIsSend = hasText
+                rambleView?.animate()?.alpha(if (hasText) 0f else 1f)?.setDuration(100)?.start()
+                sendView?.animate()?.alpha(if (hasText) 1f else 0f)?.setDuration(100)?.start()
+                rambleView?.isClickable = !hasText
+                sendView?.isClickable = hasText
+            }
         }
-        refreshChips()
+
+        fun hidePopup() {
+            if (popupBox.visibility != View.VISIBLE) return
+            popupKind = null
+            // Reference exit is two-step (content ~50ms, card ~100ms);
+            // approximated as a single 100ms card fade.
+            popupBox.animate().alpha(0f).setDuration(100).withEndAction {
+                popupBox.visibility = View.GONE; popupBox.alpha = 1f
+            }.start()
+        }
+
+        fun showPopup(kind: String) {
+            popupKind = kind
+            popupBox.removeAllViews()
+            when (kind) {
+                "priority" -> {
+                    // Only the FLAGS are coloured (P1 red / P2 orange /
+                    // P3 blue filled; P4 outline); labels stay white.
+                    // No header, no checkmark (ANALYSIS §13).
+                    for (n in 1..4) {
+                        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+                        row.gravity = Gravity.CENTER_VERTICAL
+                        row.setPadding(dp(10f), dp(13f), dp(10f), dp(13f))
+                        val fl = tv(if (n == 4) "⚐" else "⚑", 17f, priorityColor(n))
+                        fl.layoutParams = LinearLayout.LayoutParams(dp(36f), -2)
+                        row.addView(fl)
+                        row.addView(tv("Priority $n", 16f, 0xFFFFFFFF.toInt()))
+                        row.setOnClickListener {
+                            qaPriority = n
+                            qaUpdating = true
+                            qaText = if (Regex("""!!(?![1-4])""").containsMatchIn(qaText))
+                                qaText.replaceFirst(Regex("""!!(?![1-4])"""), "!!" + n)
+                            else qaText.trimEnd() + " !!" + n
+                            inp.setText(qaText); inp.setSelection(qaText.length)
+                            qaUpdating = false
+                            hidePopup()
+                            refreshDynamic()
+                        }
+                        popupBox.addView(row)
+                    }
+                }
+                "project" -> {
+                    popupBox.addView(tv("My Projects", 11f, Glass.muted(this@MainActivity), true))
+                    val q = (qaText.split(" ", "\n").lastOrNull() ?: "").removePrefix("#").lowercase()
+                    val rows = mutableListOf<Pair<String, String?>>("Inbox" to null)
+                    Store.state.projects.forEach { rows.add(it.name to it.id) }
+                    rows.filter { q.isEmpty() || it.first.lowercase().contains(q) }.forEach { (nm, pid) ->
+                        val row = tv((if (pid == null) "▣  " else "#  ") + nm, 15f)
+                        row.setPadding(dp(10f), dp(11f), dp(10f), dp(11f))
+                        row.setOnClickListener {
+                            qaProjectSet = true; qaProjectId = pid
+                            qaUpdating = true
+                            val lw = qaText.split(" ", "\n").lastOrNull() ?: ""
+                            qaText = qaText.removeSuffix(lw).trimEnd()
+                            inp.setText(qaText); inp.setSelection(qaText.length)
+                            qaUpdating = false
+                            hidePopup()
+                            refreshDynamic()
+                        }
+                        popupBox.addView(row)
+                    }
+                }
+                "plus" -> {
+                    popupBox.addView(qaPopupRow("✂️", "Extract tasks…") { hidePopup(); closeSheet(); sub = "assist"; render() })
+                    popupBox.addView(qaPopupRow("☰", "Description") { qaShowNotes = true; refreshQaSheet() })
+                    popupBox.addView(qaPopupRow("🏷️", "Labels") { pushSheet(buildQaLabels()) { buildQuickAdd() } })
+                    popupBox.addView(qaPopupRow("🎯", "Deadline") { qaPickingDeadline = true; pushSheet(buildQaDatePicker()) { buildQuickAdd() } })
+                    popupBox.addView(qaPopupRow("📍", "Location") { captureLocationQa() })
+                    val div = hairline()
+                    div.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f)))
+                    popupBox.addView(div)
+                    popupBox.addView(qaPopupRow("✎", "Customize Quick Add") { showFullSheet(buildCustomizeQa()) })
+                }
+                "attachment" -> {
+                    listOf("File", "Camera", "Audio").forEach { kindName ->
+                        val row = tv(kindName, 15f)
+                        row.setPadding(dp(10f), dp(11f), dp(10f), dp(11f))
+                        row.setOnClickListener {
+                            hidePopup()
+                            toast("Attachments aren't stored in the offline build — put the detail in the description instead")
+                        }
+                        popupBox.addView(row)
+                    }
+                }
+            }
+            popupBox.visibility = View.VISIBLE
+            popupBox.alpha = 0f; popupBox.scaleX = 0.95f; popupBox.scaleY = 0.95f
+            popupBox.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120)
+                .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+        }
+
+        fun autoPopup() {
+            val lastWord = qaText.split(" ", "\n").lastOrNull() ?: ""
+            when {
+                qaText.contains("!!") && qaPriority == null && !Regex("""!![1-4]""").containsMatchIn(qaText) -> {
+                    if (popupKind != "priority") showPopup("priority")
+                }
+                lastWord.startsWith("#") -> {
+                    if (popupKind != "project") showPopup("project")
+                }
+                else -> if (popupKind == "priority" || popupKind == "project") hidePopup()
+            }
+        }
+
         inp.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(e: Editable?) {
                 if (qaUpdating) return
                 qaText = e?.toString() ?: ""
-                refreshChips()
-                qaSuggestionPopup(popupBox, inp)
+                refreshDynamic()
+                autoPopup()
             }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -1298,87 +3041,113 @@ class MainActivity : Activity() {
         inp.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) { qaSubmit(inp, notesIn); true } else false
         }
-        // toolbar: + · Date · Priority · Reminders · Project (scrolls sideways)
+
+        // Chip row: "+" first, then the persisted Customize order as
+        // rounded-rectangle #3F3F3F chips in a horizontal scroller; the
+        // red rounded-square action button is pinned OUTSIDE the scroll.
+        val barOuter = LinearLayout(this); barOuter.orientation = LinearLayout.HORIZONTAL
+        barOuter.gravity = Gravity.CENTER_VERTICAL
+        barOuter.layoutParams = lp(t = dp(6f))
         val bar = LinearLayout(this); bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER_VERTICAL
-        bar.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        bar.addView(qaPill("＋", false) { pushSheet(buildQaPlusMenu()) { buildQuickAdd() } })
-        val dateLbl = when (qaDate) {
-            null -> "📅 Date"
-            Dates.today() -> "📅 Today"
-            Dates.addDays(Dates.today(), 1) -> "📅 Tomorrow"
-            else -> "📅 " + Dates.fmtDay(qaDate!!)
+        fun qaChip(id: String): TextView {
+            val c = tv("", 14f)
+            c.background = Glass.qaChipBg(this, false)
+            c.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            c.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(7f) }
+            when (id) {
+                "date" -> { dateChip = c; c.setOnClickListener { qaPickingDeadline = false; pushSheet(buildQaDatePicker()) { buildQuickAdd() } } }
+                "attachment" -> {
+                    c.text = if (showLabels) "📎 Attachment" else "📎"
+                    c.setOnClickListener { if (popupKind == "attachment") hidePopup() else showPopup("attachment") }
+                }
+                "priority" -> { prioChip = c; c.setOnClickListener { pushSheet(buildQaPriority()) { buildQuickAdd() } } }
+                "reminders" -> {
+                    c.text = if (showLabels) "⏰ Reminders" else "⏰"
+                    if (qaRemSet) c.setTextColor(Todoist.SALMON)
+                    c.setOnClickListener { pushSheet(buildQaReminders()) { buildQuickAdd() } }
+                }
+                "project" -> { projChip = c; c.setOnClickListener { pushSheet(buildQaProjects()) { buildQuickAdd() } } }
+                "labels" -> {
+                    c.text = if (showLabels) "🏷 Labels" else "🏷"
+                    c.setOnClickListener { pushSheet(buildQaLabels()) { buildQuickAdd() } }
+                }
+                "description" -> {
+                    c.text = if (showLabels) "☰ Description" else "☰"
+                    c.setOnClickListener { qaShowNotes = !qaShowNotes; refreshQaSheet() }
+                }
+                "deadline" -> {
+                    c.text = if (showLabels) "🎯 Deadline" else "🎯"
+                    if (qaDeadline != null) {
+                        if (showLabels) c.text = "🎯 " + fmtMonDay(qaDeadline!!)
+                        c.setTextColor(Todoist.SALMON)
+                    }
+                    c.setOnClickListener { qaPickingDeadline = true; pushSheet(buildQaDatePicker()) { buildQuickAdd() } }
+                }
+                "location" -> {
+                    c.text = if (showLabels) "📍 Location" else "📍"
+                    if (qaLocLat != null) c.setTextColor(Todoist.SALMON)
+                    c.setOnClickListener { captureLocationQa() }
+                }
+                else -> c.text = id
+            }
+            return c
         }
-        bar.addView(qaPill(dateLbl, qaDate != null) { pushSheet(buildQaDatePicker()) { buildQuickAdd() } })
-        bar.addView(qaPill(if (qaPriority != null) "⚑ P" + qaPriority else "⚑ Priority", qaPriority != null) { pushSheet(buildQaPriority()) { buildQuickAdd() } })
-        bar.addView(qaPill("⏰ Reminders", qaRemSet) { pushSheet(buildQaReminders()) { buildQuickAdd() } })
-        val projName = if (qaProjectSet) qaProjectId?.let { id -> Store.state.projects.find { it.id == id }?.name } ?: "Inbox" else "Inbox"
-        bar.addView(qaPill("▣ $projName", qaProjectSet) { pushSheet(buildQaProjects()) { buildQuickAdd() } })
+        val plusChip = tv("+", 16f)
+        plusChip.background = Glass.qaChipBg(this, false)
+        plusChip.setPadding(dp(13f), dp(9f), dp(13f), dp(9f))
+        plusChip.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(7f) }
+        plusChip.contentDescription = "More actions"
+        plusChip.setOnClickListener { if (popupKind == "plus") hidePopup() else showPopup("plus") }
+        bar.addView(plusChip)
+        Store.quickAddChipOrder()
+            .filter { it !in Store.state.quickAddHiddenChips }
+            .forEach { id -> bar.addView(qaChip(id)) }
         val barScroll = HorizontalScrollView(this)
         barScroll.isHorizontalScrollBarEnabled = false
-        barScroll.layoutParams = lp(t = dp(6f))
+        barScroll.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         barScroll.addView(bar)
-        col.addView(barScroll)
-        // Batch 9 — when a draft was resumed, offer a way out: discard it
-        // and start blank. Hidden on a fresh sheet.
+        barOuter.addView(barScroll)
+
+        // Ramble ⇄ Send: ONE red rounded square (Glass.accentSquareBg —
+        // the FAB's shape), waveform when the field is empty, ↑ when it
+        // holds any text at all, "!!" included (ANALYSIS §13).
+        val actionStack = FrameLayout(this)
+        actionStack.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(38f)).apply { leftMargin = dp(8f) }
+        val rambleBtn = FrameLayout(this)
+        rambleBtn.background = Glass.accentSquareBg(this, 10f)
+        rambleBtn.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        val wave = waveformView()
+        wave.layoutParams = FrameLayout.LayoutParams(dp(22f), dp(22f)).apply { gravity = Gravity.CENTER }
+        rambleBtn.addView(wave)
+        rambleBtn.contentDescription = "Ramble — dictate tasks"
+        rambleBtn.alpha = if (actionIsSend) 0f else 1f
+        rambleBtn.isClickable = !actionIsSend
+        rambleBtn.setOnClickListener { closeSheet(); sub = "ramble"; render() }
+        val sendBtn = tv("↑", 20f, 0xFFFFFFFF.toInt(), true)
+        sendBtn.gravity = Gravity.CENTER
+        sendBtn.background = Glass.accentSquareBg(this, 10f)
+        sendBtn.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        sendBtn.contentDescription = "Add task"
+        sendBtn.alpha = if (actionIsSend) 1f else 0f
+        sendBtn.isClickable = actionIsSend
+        sendBtn.setOnClickListener { qaSubmit(inp, notesIn) }
+        rambleView = rambleBtn; sendView = sendBtn
+        actionStack.addView(rambleBtn); actionStack.addView(sendBtn)
+        barOuter.addView(actionStack)
+        col.addView(barOuter)
+
         if (qaDraftResumed) {
             val discard = tv("✕  Discard draft", 13f, Glass.muted(this@MainActivity))
             discard.gravity = Gravity.CENTER
             discard.layoutParams = lp(t = dp(10f))
             discard.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-            discard.setOnClickListener { Sfx.tick(); clearQaDraft(); showSheet(buildQuickAdd()) }
+            discard.setOnClickListener { Sfx.tick(); clearQaDraft(); refreshQaSheet() }
             col.addView(discard)
         }
+        refreshDynamic()
         col.post { inp.requestFocus() }
         return col
-    }
-
-    private fun qaSuggestionPopup(popupBox: LinearLayout, inp: EditText) {
-        val lastWord = qaText.split(" ", "\n").lastOrNull() ?: ""
-        popupBox.removeAllViews()
-        when {
-            lastWord.startsWith("#") -> {
-                val q = lastWord.substring(1).lowercase()
-                val matches = Store.state.projects.filter { q.isEmpty() || it.name.lowercase().contains(q) }
-                if (matches.isEmpty()) { popupBox.visibility = View.GONE; return }
-                popupBox.addView(tv("MY PROJECTS", 11f, Glass.muted(this@MainActivity), true))
-                matches.forEach { p ->
-                    val row = tv("#  " + p.name, 15f)
-                    row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
-                    row.setOnClickListener {
-                        qaProjectSet = true; qaProjectId = p.id
-                        qaUpdating = true
-                        qaText = qaText.removeSuffix(lastWord).trimEnd()
-                        inp.setText(qaText); inp.setSelection(qaText.length)
-                        qaUpdating = false
-                        popupBox.visibility = View.GONE
-                        showSheet(buildQuickAdd())
-                    }
-                    popupBox.addView(row)
-                }
-                popupBox.visibility = View.VISIBLE
-            }
-            qaText.contains("!!") && qaPriority == null -> {
-                popupBox.addView(tv("PRIORITY", 11f, Glass.muted(this@MainActivity), true))
-                val flags = listOf(1 to 0xFFFF453A.toInt(), 2 to 0xFFFF9F0A.toInt(), 3 to 0xFF0A84FF.toInt(), 4 to 0xFF98989F.toInt())
-                flags.forEach { (n, color) ->
-                    val row = tv("⚑  Priority $n", 15f, color)
-                    row.setPadding(dp(8f), dp(9f), dp(8f), dp(9f))
-                    row.setOnClickListener {
-                        qaPriority = n
-                        qaUpdating = true
-                        qaText = qaText.replace("!!", "").replace(Regex("""\s+"""), " ")
-                        inp.setText(qaText); inp.setSelection(qaText.length)
-                        qaUpdating = false
-                        popupBox.visibility = View.GONE
-                        showSheet(buildQuickAdd())
-                    }
-                    popupBox.addView(row)
-                }
-                popupBox.visibility = View.VISIBLE
-            }
-            else -> popupBox.visibility = View.GONE
-        }
     }
 
     private fun qaSubmit(inp: EditText, notesIn: EditText?) {
@@ -1397,15 +3166,34 @@ class MainActivity : Activity() {
         if (qaPriority != null) t.priority = qaPriority!!
         if (qaProjectSet) t.projectId = qaProjectId
         if (qaRemSet) t.reminderOffsetMin = qaReminder
+        if (qaDeadline != null) t.deadline = qaDeadline
         qaLabelIds.forEach { if (!t.labelIds.contains(it)) t.labelIds.add(it) }
         if (qaNotes.isNotEmpty()) t.notes = qaNotes
         if (qaLocLat != null) { t.locLat = qaLocLat; t.locLng = qaLocLng }
         Reminders.sync(this, t)
         Reminders.syncGeo(this, t)
         Store.save()
-        // Batch 9 — the draft was used up; the next FAB tap starts blank.
+        Sfx.add()
+        // SEND (VIDEO §3.11): a one-frame in-place reset — the sheet does
+        // NOT close and nothing about it animates. The draft clears, the
+        // placeholder ROTATES to the next example, chips reset, Send
+        // swaps back to Ramble. Behind the card the list re-renders,
+        // smooth-scrolls (~300–400ms) to reveal the new task, and the
+        // new card fades in as it arrives.
         clearQaDraft()
-        Sfx.add(); closeSheet(); render(); toast("Task added ✅")
+        qaPlaceholderIdx++
+        refreshQaSheet()
+        render()
+        handler.postDelayed({
+            try {
+                mainScroll.smoothScrollTo(0, content.height)
+                val lastCard = content.getChildAt(content.childCount - 1)
+                if (lastCard != null) {
+                    lastCard.alpha = 0f
+                    lastCard.animate().alpha(1f).setDuration(200).start()
+                }
+            } catch (e: Exception) { /* list shorter than expected */ }
+        }, 60)
     }
 
     /* ----- Quick Add: + menu ----- */
@@ -1423,16 +3211,166 @@ class MainActivity : Activity() {
         return row
     }
 
-    private fun buildQaPlusMenu(): View {
+    /** One row of a Quick Add floating popup ("+" menu): outline icon +
+     *  white 16sp label. No PRO badges — every feature ships unlocked. */
+    private fun qaPopupRow(icon: String, title: String, click: () -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(10f), dp(12f), dp(10f), dp(12f))
+        val ic = tv(icon, 16f); ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+        row.addView(ic)
+        row.addView(tv(title, 16f))
+        row.setOnClickListener { click() }
+        return row
+    }
+
+    /** Customize Quick Add (B2 item 1i) — a full screen over the sheet
+     *  (showFullSheet); the Quick Add draft lives in the qa* fields, so
+     *  going Back reopens the card with the draft untouched, exactly as
+     *  the recording shows (VIDEO F28). Driven by the persisted model:
+     *  Store.quickAddChipOrder() + State.quickAddHiddenChips, written
+     *  through Store.setQuickAddChips on every change.
+     *  DOCUMENTED APPROXIMATION: reorder uses ↑/↓ steppers instead of
+     *  drag handles — framework-only drag-reorder inside a ScrollView
+     *  sheet fights the sheet's own scroll/dismiss gestures; the ≡
+     *  handle glyph is kept for shape fidelity. */
+    private fun buildCustomizeQa(): View {
         val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(qaMenuRow("✂️", "Extract tasks…", null) { closeSheet(); sub = "assist"; render() })
-        col.addView(qaMenuRow("☰", "Description", null) { qaShowNotes = true; returnToQuickAdd() })
-        col.addView(qaMenuRow("🏷️", "Labels", null) { pushSheet(buildQaLabels()) { buildQaPlusMenu() } })
-        col.addView(qaMenuRow("🎯", "Deadline", "PRO") { pushSheet(buildQaDatePicker()) { buildQaPlusMenu() } })
-        col.addView(qaMenuRow("📍", "Location", "PRO") { captureLocationQa() })
-        val back = ghostBtn("← Back") { returnToQuickAdd() }
-        back.layoutParams = lp(t = dp(10f))
-        col.addView(back)
+        val titleRow = LinearLayout(this); titleRow.orientation = LinearLayout.HORIZONTAL
+        titleRow.gravity = Gravity.CENTER_VERTICAL
+        val back = tv("←", 22f, Glass.text(this@MainActivity))
+        back.setPadding(dp(2f), dp(4f), dp(14f), dp(4f))
+        back.contentDescription = "Back to Quick Add"
+        back.setOnClickListener { returnToQuickAdd() }
+        titleRow.addView(back)
+        titleRow.addView(tv("Customize Quick Add", 20f, Glass.text(this@MainActivity), true))
+        col.addView(titleRow)
+
+        fun toggleRow(labelText: String, note: String?, on: Boolean, flip: (Boolean) -> Unit) {
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.background = roundedRect(TD_CARD, 14f)
+            row.setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            row.layoutParams = lp(t = dp(12f))
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colL.addView(tv(labelText, 16f))
+            if (note != null) colL.addView(tv(note, 13f, TD_GREY))
+            row.addView(colL)
+            row.addView(switchView(on))
+            row.setOnClickListener { flip(!on); Sfx.tick(); showFullSheet(buildCustomizeQa()) }
+            col.addView(row)
+        }
+        val showLabelsNow = Prefs.prefs(this).getBoolean("qa_show_labels", true)
+        toggleRow("Show action labels", null, showLabelsNow) { v -> Prefs.setBool(this, "qa_show_labels", v) }
+        val showDescNow = Prefs.prefs(this).getBoolean("qa_show_desc", false)
+        toggleRow("Show description", if (showDescNow) null else "The description field is hidden", showDescNow) { v ->
+            Prefs.setBool(this, "qa_show_desc", v)
+            qaShowNotes = v
+        }
+
+        // Live Preview card: the chip row as Quick Add will render it.
+        val prevLbl = tv("Preview", 17f, Glass.text(this@MainActivity), true)
+        prevLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
+        col.addView(prevLbl)
+        val prevCard = LinearLayout(this); prevCard.orientation = LinearLayout.VERTICAL
+        prevCard.background = Glass.todoistSheetBg(this, 16f, Todoist.SHEET)
+        prevCard.setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+        prevCard.addView(tv("Task name", 16f, Todoist.PLACEHOLDER))
+        val prevRow = LinearLayout(this); prevRow.orientation = LinearLayout.HORIZONTAL
+        prevRow.layoutParams = lp(t = dp(10f))
+        val chipNames = mapOf(
+            "date" to "📅 Date", "attachment" to "📎 Attachment", "priority" to "⚑ Priority",
+            "reminders" to "⏰ Reminders", "project" to "▣ Project", "labels" to "🏷 Labels",
+            "description" to "☰ Description", "deadline" to "🎯 Deadline", "location" to "📍 Location"
+        )
+        Store.quickAddChipOrder().filter { it !in Store.state.quickAddHiddenChips }.take(4).forEach { id ->
+            val ch = tv(if (showLabelsNow) chipNames[id] ?: id else (chipNames[id]?.take(2) ?: id), 13f)
+            ch.background = Glass.qaChipBg(this, false)
+            ch.setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            prevRow.addView(ch)
+        }
+        prevCard.addView(prevRow)
+        col.addView(prevCard)
+
+        val arrLbl = tv("Task actions arrangement", 17f, Glass.text(this@MainActivity), true)
+        arrLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
+        col.addView(arrLbl)
+        val visible = Store.quickAddChipOrder().filter { it !in Store.state.quickAddHiddenChips }.toMutableList()
+        val hidden = Store.state.quickAddHiddenChips.toMutableList()
+        fun persist() { Store.setQuickAddChips(visible.toList(), hidden.toList()) }
+        visible.forEachIndexed { idx, id ->
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.background = roundedRect(TD_CARD, 14f)
+            row.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            row.layoutParams = lp(b = dp(8f))
+            if (id == "project") {
+                // Project is padlocked in the reference — it cannot be removed.
+                val lock = tv("🔒", 14f, TD_GREY)
+                lock.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+                row.addView(lock)
+            } else {
+                val minus = tv("−", 18f, 0xFFFFFFFF.toInt(), true)
+                minus.gravity = Gravity.CENTER
+                minus.background = ovalDrawable(TD_RED)
+                minus.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f)).apply { rightMargin = dp(10f) }
+                minus.contentDescription = "Remove " + id
+                minus.setOnClickListener {
+                    visible.remove(id); hidden.add(id); persist()
+                    showFullSheet(buildCustomizeQa())
+                }
+                row.addView(minus)
+            }
+            val nm = tv(chipNames[id]?.substringAfter(" ") ?: id, 16f)
+            nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(nm)
+            val up = tv("↑", 16f, if (idx > 0) Glass.text(this@MainActivity) else TD_GREY)
+            up.setPadding(dp(8f), dp(4f), dp(4f), dp(4f))
+            up.setOnClickListener {
+                if (idx > 0) {
+                    val tmp = visible[idx - 1]; visible[idx - 1] = visible[idx]; visible[idx] = tmp
+                    persist(); showFullSheet(buildCustomizeQa())
+                }
+            }
+            row.addView(up)
+            val down = tv("↓", 16f, if (idx < visible.size - 1) Glass.text(this@MainActivity) else TD_GREY)
+            down.setPadding(dp(4f), dp(4f), dp(8f), dp(4f))
+            down.setOnClickListener {
+                if (idx < visible.size - 1) {
+                    val tmp = visible[idx + 1]; visible[idx + 1] = visible[idx]; visible[idx] = tmp
+                    persist(); showFullSheet(buildCustomizeQa())
+                }
+            }
+            row.addView(down)
+            row.addView(tv("≡", 18f, TD_GREY))
+            col.addView(row)
+        }
+
+        if (hidden.isNotEmpty()) {
+            val moreLbl = tv("More task actions", 17f, Glass.text(this@MainActivity), true)
+            moreLbl.layoutParams = lp(t = dp(16f), b = dp(10f))
+            col.addView(moreLbl)
+            hidden.forEach { id ->
+                val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER_VERTICAL
+                row.background = roundedRect(TD_CARD, 14f)
+                row.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+                row.layoutParams = lp(b = dp(8f))
+                val plus = tv("+", 16f, 0xFFBF5AF2.toInt(), true)
+                plus.gravity = Gravity.CENTER
+                plus.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f)).apply { rightMargin = dp(10f) }
+                plus.contentDescription = "Add " + id
+                plus.setOnClickListener {
+                    hidden.remove(id); visible.add(id); persist()
+                    showFullSheet(buildCustomizeQa())
+                }
+                row.addView(plus)
+                row.addView(tv(chipNames[id]?.substringAfter(" ") ?: id, 16f))
+                col.addView(row)
+            }
+        }
         return col
     }
 
@@ -1566,94 +3504,168 @@ class MainActivity : Activity() {
 
     /* ----- Quick Add: date picker ----- */
 
-    private fun buildQaDatePicker(): View {
-        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
-        col.addView(tv("Date", 17f, Glass.text(this@MainActivity), true))
-        val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
-        fun quickRow(icon: String, lbl: String, date: String) {
-            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-            row.gravity = Gravity.CENTER_VERTICAL
-            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
-            val ic = tv(icon, 16f); ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
-            row.addView(ic)
-            val tt = tv(lbl + if (qaDate == date) "  ✓" else "", 15f)
-            tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            row.addView(tt)
-            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.muted(this@MainActivity)))
-            row.setOnClickListener { qaDate = date; Sfx.tick(); showSheet(buildQaDatePicker()) }
-            col.addView(row)
-        }
-        quickRow("📅", "Today", Dates.today())
-        quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
-        quickRow("⏭️", "Next week", Dates.addDays(Dates.today(), 7))
-        if (qaDate != null) {
-            val clr = tv("✕  Clear date", 15f, Glass.overdue(this@MainActivity))
-            clr.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
-            clr.setOnClickListener { qaDate = null; qaTime = null; showSheet(buildQaDatePicker()) }
-            col.addView(clr)
-        }
-        // month grid
+    /** One month grid for the date sheet (B2): today is a FILLED red
+     *  circle with a white number, the selected day is filled red too,
+     *  and a small grey dot sits under days that have tasks. Cells set
+     *  the active target (due date, or deadline while
+     *  qaPickingDeadline) and rebuild the sheet. */
+    private fun qaMonthGrid(year: Int, month: Int): View {
+        val wrap = LinearLayout(this); wrap.orientation = LinearLayout.VERTICAL
         val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
-        head.gravity = Gravity.CENTER_VERTICAL
-        head.layoutParams = lp(t = dp(10f), b = dp(4f))
-        val prev = tv("‹", 22f, Glass.text(this@MainActivity), true); prev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
-        prev.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, -1); showSheet(buildQaDatePicker()) }
-        val mt = tv(monthNames[qaCursor.get(java.util.Calendar.MONTH)] + " " + qaCursor.get(java.util.Calendar.YEAR), 15f, Glass.text(this@MainActivity), true)
-        mt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); mt.gravity = Gravity.CENTER
-        val next = tv("›", 22f, Glass.text(this@MainActivity), true); next.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
-        next.setOnClickListener { qaCursor.add(java.util.Calendar.MONTH, 1); showSheet(buildQaDatePicker()) }
-        head.addView(prev); head.addView(mt); head.addView(next)
-        col.addView(head)
+        val mt = tv(monthNames[month] + " " + year, 15f, Glass.text(this@MainActivity), true)
+        mt.layoutParams = lp(t = dp(14f), b = dp(6f))
+        wrap.addView(mt)
         val dowRow = LinearLayout(this); dowRow.orientation = LinearLayout.HORIZONTAL
         listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
             val t = tv(d, 11f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
             t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             dowRow.addView(t)
         }
-        col.addView(dowRow)
-        val y = qaCursor.get(java.util.Calendar.YEAR)
-        val mo = qaCursor.get(java.util.Calendar.MONTH)
-        val first = java.util.Calendar.getInstance(); first.set(y, mo, 1, 0, 0, 0)
+        wrap.addView(dowRow)
+        val first = java.util.Calendar.getInstance(); first.set(year, month, 1, 0, 0, 0)
         val startDow = (Dates.jsDayOfWeek(first) + 6) % 7 // Monday-first
         val dim = first.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+        val active = if (qaPickingDeadline) qaDeadline else qaDate
         var day = 1
         for (week in 0 until 6) {
             if (day > dim) break
             val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
             for (dowI in 0 until 7) {
-                val cell = tv("", 13f); cell.gravity = Gravity.CENTER
-                cell.layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f)
+                val cell = LinearLayout(this); cell.orientation = LinearLayout.VERTICAL
+                cell.gravity = Gravity.CENTER_HORIZONTAL
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(46f), 1f)
                 if (!(week == 0 && dowI < startDow) && day <= dim) {
-                    val ds = y.toString() + "-" + (mo + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
-                    cell.text = day.toString()
-                    when {
-                        ds == qaDate -> { cell.background = Glass.accentGradient(this, 999f); cell.setTextColor(0xFFFFFFFF.toInt()) }
-                        ds == Dates.today() -> cell.setTextColor(if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.base(this@MainActivity))
-                    }
+                    val ds = year.toString() + "-" + (month + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
+                    val isToday = ds == Dates.today()
+                    val isSel = ds == active
+                    val numWrap = FrameLayout(this)
+                    numWrap.layoutParams = LinearLayout.LayoutParams(dp(30f), dp(30f))
+                    if (isToday || isSel) numWrap.background = ovalDrawable(TD_RED)
+                    val num = tv(day.toString(), 14f,
+                        if (isToday || isSel) 0xFFFFFFFF.toInt()
+                        else if (ds < Dates.today()) TD_GREY else Glass.text(this@MainActivity), isToday)
+                    num.gravity = Gravity.CENTER
+                    num.layoutParams = FrameLayout.LayoutParams(-1, -1)
+                    numWrap.addView(num)
+                    cell.addView(numWrap)
+                    val dot = View(this)
+                    dot.layoutParams = LinearLayout.LayoutParams(dp(4f), dp(4f)).apply { topMargin = dp(3f) }
+                    if (Store.state.tasks.any { it.dueDate == ds }) dot.background = ovalDrawable(TD_GREY)
+                    else dot.visibility = View.INVISIBLE
+                    cell.addView(dot)
                     val dd = ds
-                    cell.setOnClickListener { qaDate = dd; Sfx.tick(); showSheet(buildQaDatePicker()) }
+                    cell.setOnClickListener {
+                        if (qaPickingDeadline) qaDeadline = dd else qaDate = dd
+                        Sfx.tick()
+                        showSheet(buildQaDatePicker())
+                    }
                     day++
                 }
                 rowL.addView(cell)
             }
-            col.addView(rowL)
+            wrap.addView(rowL)
         }
-        // time + repeat rows
-        val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { pushSheet(buildQaTimePicker()) { buildQaDatePicker() } }
-        col.addView(timeRow)
-        val recLbl = when {
-            !qaRecSet || qaRecurrence == null -> "Repeat"
-            qaRecurrence == "daily" -> "Repeat · Daily"
-            qaRecurrence == "weekly" -> "Repeat · Weekly"
-            qaRecurrence == "monthly" -> "Repeat · Monthly"
-            else -> "Repeat · " + qaRecurrence
+        return wrap
+    }
+
+    private fun buildQaDatePicker(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(if (qaPickingDeadline) "Deadline" else "Date", 17f, Glass.text(this@MainActivity), true))
+        fun activeDate(): String? = if (qaPickingDeadline) qaDeadline else qaDate
+        fun setActiveDate(d: String?) { if (qaPickingDeadline) qaDeadline = d else qaDate = d }
+
+        // Typeable natural-language field (VIDEO F30: the sheet carries
+        // the typed recurrence, e.g. "ev 2 days starting monday"). Ours
+        // accepts every phrase the Parser understands — "every day",
+        // "every monday", "tomorrow", "5 jan", "next week" — applied to
+        // the recurrence + the active date on Apply.
+        val recPhrase = when {
+            !qaRecSet || qaRecurrence == null -> ""
+            qaRecurrence == "daily" -> "every day"
+            qaRecurrence == "weekly" -> "every week"
+            qaRecurrence == "monthly" -> "every month"
+            qaRecurrence!!.startsWith("weekly:") -> "every " + listOf("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")[qaRecurrence!!.substringAfter(':').toIntOrNull() ?: 1]
+            else -> qaRecurrence!!
         }
-        col.addView(qaMenuRow("🔁", recLbl, null) { pushSheet(buildQaRepeat()) { buildQaDatePicker() } })
-        val save = accentBtn("Save") { returnToQuickAdd() }
-        save.layoutParams = lp(t = dp(10f))
-        col.addView(save)
-        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        val nlIn = input("Type a date or repeat — e.g. every monday", recPhrase)
+        col.addView(nlIn)
+        val nlApply = tv("Apply", 14f, TD_SALMON, true)
+        nlApply.setPadding(dp(4f), dp(2f), dp(4f), dp(8f))
+        nlApply.setOnClickListener {
+            val parsedNl = Parser.parse("Task " + nlIn.text.toString().trim())
+            if (parsedNl.recurrence != null) {
+                qaRecSet = true; qaRecurrence = parsedNl.recurrence
+                if (parsedNl.dueDate != null && !qaPickingDeadline) qaDate = parsedNl.dueDate
+            }
+            if (parsedNl.dueDate != null) setActiveDate(parsedNl.dueDate)
+            if (parsedNl.deadline != null && qaPickingDeadline) qaDeadline = parsedNl.deadline
+            Sfx.tick()
+            showSheet(buildQaDatePicker())
+        }
+        col.addView(nlApply)
+
+        // Quick rows with red icons (VIDEO F30).
+        val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+        fun quickRow(icon: String, lbl: String, date: String) {
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            val ic = tv(icon, 16f, TD_RED); ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+            row.addView(ic)
+            val tt = tv(lbl + if (activeDate() == date) "  ✓" else "", 15f)
+            tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(tt)
+            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.muted(this@MainActivity)))
+            row.setOnClickListener { setActiveDate(date); Sfx.tick(); showSheet(buildQaDatePicker()) }
+            col.addView(row)
+        }
+        quickRow("📅", "Today", Dates.today())
+        quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
+        quickRow("⏭️", "Next week", Dates.addDays(Dates.today(), 7))
+        if (activeDate() != null) {
+            val clr = tv("✕  Clear date", 15f, Glass.overdue(this@MainActivity))
+            clr.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
+            clr.setOnClickListener { setActiveDate(null); if (!qaPickingDeadline) qaTime = null; showSheet(buildQaDatePicker()) }
+            col.addView(clr)
+        }
+
+        // Multi-month scroll: three stacked months in the sheet's own
+        // ScrollView (the reference shows two; three keeps the same
+        // continuous-scroll shape with more reach).
+        val base = Dates.parse(activeDate() ?: Dates.today())
+        for (mOff in 0..2) {
+            val mc = base.clone() as java.util.Calendar
+            mc.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            mc.add(java.util.Calendar.MONTH, mOff)
+            col.addView(qaMonthGrid(mc.get(java.util.Calendar.YEAR), mc.get(java.util.Calendar.MONTH)))
+        }
+
+        if (!qaPickingDeadline) {
+            val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { pushSheet(buildQaTimePicker()) { buildQaDatePicker() } }
+            col.addView(timeRow)
+            val recLbl = when {
+                !qaRecSet || qaRecurrence == null -> "Repeat"
+                qaRecurrence == "daily" -> "Repeat · Daily"
+                qaRecurrence == "weekly" -> "Repeat · Weekly"
+                qaRecurrence == "monthly" -> "Repeat · Monthly"
+                else -> "Repeat · " + qaRecurrence
+            }
+            col.addView(qaMenuRow("🔁", recLbl, null) { pushSheet(buildQaRepeat()) { buildQaDatePicker() } })
+        }
+        // Save — red rounded-rectangle, bottom-right (not a pill).
+        val saveRow = LinearLayout(this); saveRow.orientation = LinearLayout.HORIZONTAL
+        saveRow.layoutParams = lp(t = dp(14f))
+        val spacer = View(this)
+        spacer.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        saveRow.addView(spacer)
+        val save = tv("Save", 15f, 0xFFFFFFFF.toInt(), false)
+        save.gravity = Gravity.CENTER
+        save.background = roundedRect(TD_RED, 10f)
+        save.layoutParams = LinearLayout.LayoutParams(dp(72f), dp(40f))
+        save.setOnClickListener { qaPickingDeadline = false; returnToQuickAdd() }
+        saveRow.addView(save)
+        col.addView(saveRow)
+        val back = ghostBtn("← Back") { qaPickingDeadline = false; if (!popSheet()) returnToQuickAdd() }
         back.layoutParams = lp(t = dp(10f))
         col.addView(back)
         return col
@@ -1821,6 +3833,15 @@ class MainActivity : Activity() {
         val projIds = listOf<String?>(null) + Store.state.projects.map { it.id }
         val edProj = spinner(projNames, projIds.indexOf(t.projectId).coerceAtLeast(0)); col.addView(edProj)
 
+        // Section picker (Correction Round 2, F-2): lists the sections of
+        // the task's project; rebuilt when the project changes (listener
+        // below) so the options always match the chosen project.
+        col.addView(label("Section"))
+        val secItems = Store.state.sections.filter { it.projectId == t.projectId }.sortedBy { it.order }
+        val secNames = listOf("No section") + secItems.map { it.name }
+        val secIds = listOf<String?>(null) + secItems.map { it.id }
+        val edSec = spinner(secNames, secIds.indexOf(t.sectionId).coerceAtLeast(0)); col.addView(edSec)
+
         col.addView(label("Duration (minutes)"))
         val edDur = input("e.g. 30", t.durationMin?.toString() ?: ""); col.addView(edDur)
 
@@ -1840,6 +3861,12 @@ class MainActivity : Activity() {
             t.recurrence = recValues[edRec.selectedItemPosition]
             t.priority = edPri.selectedItemPosition + 1
             t.projectId = projIds[edProj.selectedItemPosition]
+            // A section only survives if it belongs to the (possibly just
+            // changed) project — the guard keeps a stale cross-project
+            // section from being stashed onto the task.
+            t.sectionId = secIds[edSec.selectedItemPosition]?.takeIf { sid ->
+                Store.state.sections.any { it.id == sid && it.projectId == t.projectId }
+            }
             t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
             t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
             // Stash+save flows persist the fields, so the discard guard's
@@ -1861,8 +3888,27 @@ class MainActivity : Activity() {
                 recValues[edRec.selectedItemPosition] != recValues[recValues.indexOf(s.recurrence).coerceAtLeast(0)] ||
                 edPri.selectedItemPosition + 1 != s.priority.coerceIn(1, 4) ||
                 projIds[edProj.selectedItemPosition] != projIds[projIds.indexOf(s.projectId).coerceAtLeast(0)] ||
+                secIds[edSec.selectedItemPosition] != secIds[secIds.indexOf(s.sectionId).coerceAtLeast(0)] ||
                 edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 } != s.durationMin ||
                 remValues[edRem.selectedItemPosition] != remValues[remValues.indexOf(s.reminderOffsetMin).coerceAtLeast(0)]
+        }
+
+        // When the project changes, stash everything typed so far (the
+        // stash guard drops a section that belongs to the old project)
+        // and rebuild the sheet so the Section spinner lists the new
+        // project's sections. The init flag swallows the spinner's
+        // initial selection callback.
+        var projListenerInit = true
+        edProj.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (projListenerInit) { projListenerInit = false; return }
+                if (projIds[pos] == t.projectId) return
+                stash()
+                editorSnapshot = t.copy()
+                Store.save()
+                showSheet(buildEditor(t))
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
         col.addView(label("Location reminder"))
@@ -1939,6 +3985,9 @@ class MainActivity : Activity() {
             t.recurrence = recValues[edRec.selectedItemPosition]
             t.priority = edPri.selectedItemPosition + 1
             t.projectId = projIds[edProj.selectedItemPosition]
+            t.sectionId = secIds[edSec.selectedItemPosition]?.takeIf { sid ->
+                Store.state.sections.any { it.id == sid && it.projectId == t.projectId }
+            }
             t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
             t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
             Reminders.sync(this, t)
@@ -2255,67 +4304,270 @@ class MainActivity : Activity() {
         return c
     }
 
-    private fun renderStats() {
-        val grid1 = LinearLayout(this); grid1.orientation = LinearLayout.HORIZONTAL
-        val sc1 = statCard("🔥 " + Store.currentStreak(), "day streak")
-        sc1.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
-        val sc2 = statCard(Store.completionsOn(Dates.today()).toString(), "done today")
-        sc2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        grid1.addView(sc1); grid1.addView(sc2)
-        content.addView(grid1)
-        val last7 = (6 downTo 0).sumOf { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
-        val grid2 = LinearLayout(this); grid2.orientation = LinearLayout.HORIZONTAL
-        val sc3 = statCard(last7.toString(), "done in 7 days")
-        sc3.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
-        val sc4 = statCard(Store.state.completions.size.toString(), "all-time done")
-        sc4.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        grid2.addView(sc3); grid2.addView(sc4)
-        content.addView(grid2)
+    /* ----- Productivity (Todoist shape, B2) ----- */
 
-        val chart = card()
-        chart.addView(tv("Last 7 days", 15f, Glass.text(this@MainActivity), true))
-        val counts = (6 downTo 0).map { Store.completionsOn(Dates.addDays(Dates.today(), -it)) }
-        val max = Math.max(1, counts.maxOrNull() ?: 1)
-        val bars = LinearLayout(this); bars.orientation = LinearLayout.HORIZONTAL
-        bars.gravity = Gravity.BOTTOM
-        bars.layoutParams = lp(t = dp(12f))
-        val dayNames = arrayOf("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa")
-        counts.forEachIndexed { i, n ->
-            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
-            colL.gravity = Gravity.CENTER_HORIZONTAL
-            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(n.toString(), 11f, Glass.muted(this@MainActivity), true))
+    private fun prodCard(): LinearLayout {
+        val c = LinearLayout(this); c.orientation = LinearLayout.VERTICAL
+        c.background = roundedRect(TD_CARD, 16f)
+        c.setPadding(dp(20f), dp(18f), dp(20f), dp(18f))
+        c.layoutParams = lp(b = dp(12f))
+        return c
+    }
+
+    /** One horizontal chart row (ANALYSIS §7): a GREY bar proportional
+     *  to count/max — or only a thin axis tick when the count is zero —
+     *  the right-side axis segment, and the label AFTER the bar. */
+    private fun prodBarRow(count: Int, max: Int, labelText: String, labelWidthDp: Float): View {
+        val frame = FrameLayout(this)
+        frame.layoutParams = lp(t = dp(5f), b = dp(5f))
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val zone = LinearLayout(this); zone.orientation = LinearLayout.HORIZONTAL
+        zone.gravity = Gravity.CENTER_VERTICAL
+        zone.layoutParams = LinearLayout.LayoutParams(0, dp(16f), 1f)
+        if (count <= 0) {
+            val tick = View(this)
+            tick.background = roundedRect(Todoist.CHART_BAR, 1f)
+            tick.layoutParams = LinearLayout.LayoutParams(dp(2f), dp(14f))
+            zone.addView(tick)
+            val spacer = View(this)
+            spacer.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            zone.addView(spacer)
+        } else {
             val bar = View(this)
-            val h = dp(8f) + (dp(74f) * n / max)
-            bar.layoutParams = LinearLayout.LayoutParams(dp(20f), h).apply { topMargin = dp(4f); bottomMargin = dp(4f) }
-            val g = android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(Accents.acc2(this), Accents.acc1(this))
-            )
-            g.cornerRadius = dp(6f).toFloat()
-            bar.background = g
-            colL.addView(bar)
-            val d = Dates.parse(Dates.addDays(Dates.today(), -(6 - i)))
-            colL.addView(tv(dayNames[Dates.jsDayOfWeek(d)], 11f, Glass.muted(this@MainActivity)))
-            bars.addView(colL)
+            bar.background = roundedRect(Todoist.CHART_BAR, 2f)
+            bar.layoutParams = LinearLayout.LayoutParams(0, -1, count.toFloat())
+            zone.addView(bar)
+            val rest = max - count
+            if (rest > 0) {
+                val spacer = View(this)
+                spacer.layoutParams = LinearLayout.LayoutParams(0, -2, rest.toFloat())
+                zone.addView(spacer)
+            }
         }
-        chart.addView(bars)
-        content.addView(chart)
+        row.addView(zone)
+        val lbl = tv(labelText, 14f, TD_GREY)
+        lbl.layoutParams = LinearLayout.LayoutParams(dp(labelWidthDp), -2).apply { leftMargin = dp(10f) }
+        row.addView(lbl)
+        frame.addView(row)
+        val axis = View(this)
+        axis.setBackgroundColor(android.graphics.Color.argb(90, 255, 255, 255))
+        val ap = FrameLayout.LayoutParams(1, -1)
+        ap.gravity = Gravity.END
+        ap.rightMargin = dp(labelWidthDp) + dp(10f)
+        axis.layoutParams = ap
+        frame.addView(axis)
+        return frame
+    }
 
-        val per = card()
-        per.addView(tv("Completions by project", 15f, Glass.text(this@MainActivity), true))
-        val byProj = Store.state.projects.map { p ->
-            p.name to Store.state.completions.count { it.projectId == p.id }
-        }.filter { it.second > 0 }.sortedByDescending { it.second }
-        if (byProj.isEmpty()) per.addView(tv("Complete a task and it will show up here.", 13f, Glass.muted(this@MainActivity)))
-        byProj.forEach { (name, n) ->
-            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
-            rowL.layoutParams = lp(t = dp(6f))
-            val nm = tv("# $name", 15f); nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            rowL.addView(nm); rowL.addView(tv(n.toString(), 15f, Glass.text(this@MainActivity), true))
-            per.addView(rowL)
+    /** Goal card: big "x/goal tasks", supportive line, salmon Edit goal,
+     *  and the progress ring (arc from 12 o'clock, clockwise) with its
+     *  centre graphic — GREY medal (Daily) / GREY trophy (Weekly) /
+     *  RED pin (Karma, via renderStats' own card). */
+    private fun goalRingCard(title: String, done: Int, goal: Int, fraction: Float, message: String, centreKind: Int, edit: () -> Unit): LinearLayout {
+        val c = prodCard()
+        c.addView(tv(title, 17f, Glass.text(this@MainActivity), true))
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.layoutParams = lp(t = dp(14f))
+        val left = LinearLayout(this); left.orientation = LinearLayout.VERTICAL
+        left.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        val big = LinearLayout(this); big.orientation = LinearLayout.HORIZONTAL
+        big.gravity = Gravity.BOTTOM
+        big.addView(tv("$done/$goal", 22f, Glass.text(this@MainActivity), true))
+        val unit = tv(" tasks", 17f)
+        unit.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(1f) }
+        big.addView(unit)
+        left.addView(big)
+        val msg = tv(message, 15f, 0xFFC8C8C8.toInt())
+        msg.layoutParams = lp(t = dp(6f))
+        left.addView(msg)
+        val editT = tv("Edit goal", 15f, TD_SALMON)
+        editT.setPadding(0, dp(6f), dp(8f), 0)
+        editT.contentDescription = "Edit goal"
+        editT.setOnClickListener { edit() }
+        left.addView(editT)
+        row.addView(left)
+        val ring = GoalRingView(this, fraction, TD_RED, Todoist.RING_TRACK, centreKind)
+        ring.layoutParams = LinearLayout.LayoutParams(dp(88f), dp(88f))
+        ring.contentDescription = title + " progress ring"
+        row.addView(ring)
+        c.addView(row)
+        return c
+    }
+
+    private fun showEditGoalSheet(daily: Boolean) {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(if (daily) "Daily goal" else "Weekly goal", 17f, Glass.text(this@MainActivity), true))
+        val inp = input("Tasks per " + if (daily) "day" else "week",
+            (if (daily) Store.state.dailyGoal else Store.state.weeklyGoal).toString())
+        inp.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        col.addView(inp)
+        val save = accentBtn("Save goal") {
+            val n = inp.text.toString().trim().toIntOrNull()
+            if (n == null || n < 1) { toast("Enter a number from 1 to 999"); return@accentBtn }
+            if (daily) Store.setDailyGoal(n) else Store.setWeeklyGoal(n)
+            Sfx.tick(); closeSheet(); render()
         }
-        content.addView(per)
+        col.addView(save)
+        showSheet(col)
+    }
+
+    private fun renderStats() {
+        // Two-tone shell: the app header stays on #212121; the content
+        // area is the warm brown Todoist.PROD_BG (ANALYSIS §7).
+        content.setBackgroundColor(Todoist.PROD_BG)
+        val today = Dates.today()
+        val comps = Store.state.completions
+
+        // Profile block — on the brown background, no card.
+        val prof = LinearLayout(this); prof.orientation = LinearLayout.HORIZONTAL
+        prof.gravity = Gravity.CENTER_VERTICAL
+        prof.setPadding(dp(4f), dp(6f), dp(4f), dp(14f))
+        val av = tv("S", 20f, 0xFFFFFFFF.toInt(), true); av.gravity = Gravity.CENTER
+        av.background = ovalDrawable(0xFF3A3A44.toInt())
+        av.layoutParams = LinearLayout.LayoutParams(dp(52f), dp(52f)).apply { rightMargin = dp(12f) }
+        prof.addView(av)
+        val pcol = LinearLayout(this); pcol.orientation = LinearLayout.VERTICAL
+        pcol.addView(tv("Shadow", 18f, Glass.text(this@MainActivity), true))
+        val earliest = comps.minOfOrNull { it.date }
+        val psub = tv(
+            if (earliest != null) "${comps.size} completed tasks since " + fmtMonDay(earliest)
+            else "No completed tasks yet",
+            15f, TD_SALMON)
+        psub.layoutParams = lp(t = dp(2f))
+        pcol.addView(psub)
+        prof.addView(pcol)
+        content.addView(prof)
+
+        // Tabs: selected = salmon text + a short word-width rounded red
+        // underline bar (not full-width).
+        val tabs = LinearLayout(this); tabs.orientation = LinearLayout.HORIZONTAL
+        tabs.layoutParams = lp(b = dp(14f))
+        listOf("daily" to "Daily", "weekly" to "Weekly", "karma" to "Karma").forEach { (id, lbl) ->
+            val on = prodTab == id
+            val colT = LinearLayout(this); colT.orientation = LinearLayout.VERTICAL
+            colT.gravity = Gravity.CENTER_HORIZONTAL
+            colT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colT.addView(tv(lbl, 17f, if (on) TD_SALMON else TD_GREY))
+            val barU = View(this)
+            barU.background = roundedRect(TD_SALMON, 2f)
+            barU.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(4f)).apply { topMargin = dp(8f) }
+            barU.visibility = if (on) View.VISIBLE else View.INVISIBLE
+            colT.addView(barU)
+            colT.setOnClickListener { prodTab = id; Sfx.tick(); render() }
+            tabs.addView(colT)
+        }
+        content.addView(tabs)
+
+        val gp = Stats.goalProgress(comps, today, Store.state.dailyGoal, Store.state.weeklyGoal)
+        when (prodTab) {
+            "weekly" -> {
+                content.addView(goalRingCard("Weekly goal", gp.weeklyDone, gp.weeklyGoal, gp.weeklyFraction,
+                    when {
+                        gp.weeklyGoal > 0 && gp.weeklyDone >= gp.weeklyGoal -> "Goal smashed — amazing work!"
+                        gp.weeklyDone == 0 -> "A fresh week — one task at a time."
+                        else -> "Keep up the momentum!"
+                    }, 1) { showEditGoalSheet(false) })
+                val sc = prodCard()
+                sc.addView(tv("Weekly streak", 17f, Glass.text(this@MainActivity), true))
+                val sv = tv(Stats.weeklyStreak(comps, today, Store.state.weeklyGoal).toString() + " weeks", 16f, 0xFFC8C8C8.toInt())
+                sv.layoutParams = lp(t = dp(6f))
+                sc.addView(sv)
+                content.addView(sc)
+                val chart = prodCard()
+                chart.addView(tv("Completed in the last 4 weeks", 17f, Glass.text(this@MainActivity), true))
+                // Today-first, exactly as Stats returns it (Correction
+                // Round 1). Weekly rows carry NO labels — bare counts.
+                val weeks = Stats.lastNWeeksCounts(comps, today, 4)
+                val maxW = Math.max(1, weeks.maxOfOrNull { it.second } ?: 1)
+                weeks.forEach { (_, n) -> chart.addView(prodBarRow(n, maxW, n.toString(), 36f)) }
+                content.addView(chart)
+            }
+            "karma" -> {
+                val info = Karma.levelFor(Store.state.karmaPoints)
+                val lc = prodCard()
+                lc.addView(tv("Karma level", 17f, Glass.text(this@MainActivity), true))
+                val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER_VERTICAL
+                row.layoutParams = lp(t = dp(14f))
+                val left = LinearLayout(this); left.orientation = LinearLayout.VERTICAL
+                left.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                val big = LinearLayout(this); big.orientation = LinearLayout.HORIZONTAL
+                big.gravity = Gravity.BOTTOM
+                big.addView(tv(info.name, 19f, Glass.text(this@MainActivity), true))
+                big.addView(tv(" (" + Store.state.karmaPoints + ")", 19f))
+                left.addView(big)
+                val sub2 = tv(
+                    if (info.nextName != null) "${info.pointsToNext} left to get to " + info.nextName
+                    else "Top level reached — nothing above Grandmaster",
+                    15f, 0xFFC8C8C8.toInt())
+                sub2.layoutParams = lp(t = dp(6f))
+                left.addView(sub2)
+                val about = tv("About Karma levels", 15f, TD_SALMON)
+                about.setPadding(0, dp(6f), dp(8f), 0)
+                about.setOnClickListener {
+                    AlertDialog.Builder(this).setTitle("Karma levels")
+                        .setMessage("Beginner 0 · Novice 500 · Intermediate 2,000 · Proficient 5,000 · Expert 10,000 · Master 20,000 · Grandmaster 50,000.\n\nCompleting tasks earns points by priority: P1 = 50, P2 = 30, P3 = 20, P4 = 10. Points are never deducted.")
+                        .setPositiveButton("OK", null).show()
+                }
+                left.addView(about)
+                row.addView(left)
+                val ring = GoalRingView(this, info.progress, TD_RED, Todoist.RING_TRACK, 2)
+                ring.layoutParams = LinearLayout.LayoutParams(dp(88f), dp(88f))
+                ring.contentDescription = "Karma level progress ring"
+                row.addView(ring)
+                lc.addView(row)
+                content.addView(lc)
+
+                val tc = prodCard()
+                tc.addView(tv("Karma trend", 17f, Glass.text(this@MainActivity), true))
+                // Karma.trend is today-first (Correction Round 1); the
+                // chart's time axis runs oldest → newest, so it is
+                // reversed for plotting only.
+                val trend = Karma.trend(comps, today).reversed()
+                val chartView = KarmaTrendView(this, trend)
+                chartView.layoutParams = lp(t = dp(10f), b = dp(6f))
+                chartView.layoutParams.height = dp(170f)
+                tc.addView(chartView)
+                val letters = LinearLayout(this); letters.orientation = LinearLayout.HORIZONTAL
+                val dayLetters = arrayOf("S", "M", "T", "W", "T", "F", "S")
+                (6 downTo 0).forEach { back ->
+                    val d = Dates.parse(Dates.addDays(today, -back))
+                    val lt = tv(dayLetters[Dates.jsDayOfWeek(d)], 13f, TD_GREY)
+                    lt.gravity = Gravity.CENTER
+                    lt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                    letters.addView(lt)
+                }
+                tc.addView(letters)
+                content.addView(tc)
+            }
+            else -> {
+                content.addView(goalRingCard("Goal progress", gp.dailyDone, gp.dailyGoal, gp.dailyFraction,
+                    when {
+                        gp.dailyGoal > 0 && gp.dailyDone >= gp.dailyGoal -> "Goal smashed — amazing work!"
+                        gp.dailyDone == 0 -> "A fresh start — one task at a time."
+                        else -> "You've got some great momentum!"
+                    }, 0) { showEditGoalSheet(true) })
+                val sc = prodCard()
+                sc.addView(tv("Current streak", 17f, Glass.text(this@MainActivity), true))
+                val sv = tv(Stats.currentStreak(comps, today).toString() + " days", 16f, 0xFFC8C8C8.toInt())
+                sv.layoutParams = lp(t = dp(6f))
+                sc.addView(sv)
+                content.addView(sc)
+                val chart = prodCard()
+                chart.addView(tv("Completed in the last 7 days", 17f, Glass.text(this@MainActivity), true))
+                // Rows TODAY-FIRST, exactly as Stats returns them.
+                val days = Stats.lastNDaysCounts(comps, today, 7)
+                val maxD = Math.max(1, days.maxOfOrNull { it.second } ?: 1)
+                val dayLetters = arrayOf("S", "M", "T", "W", "T", "F", "S")
+                days.forEach { (date, n) ->
+                    val letter = dayLetters[Dates.jsDayOfWeek(Dates.parse(date))]
+                    chart.addView(prodBarRow(n, maxD, "$letter · $n", 64f))
+                }
+                content.addView(chart)
+            }
+        }
     }
 
     /* ----- Performance (database-backed) ----- */
@@ -2513,31 +4765,83 @@ class MainActivity : Activity() {
         }
     }
 
-    /* ----- History ----- */
+    /* ----- History / Reporting ----- */
+
+    /** How many activity entries the Reporting screen has paged in so
+     *  far. The log itself is capped at 100,000 (Store.logActivity); the
+     *  screen pages through it 150 at a time instead of truncating the
+     *  presentation at 150 (Correction Round 2, F-1). */
+    private var historyShown = 150
+
+    private fun historyDayLabel(day: String): String = when (day) {
+        Dates.today() -> "Today"
+        Dates.addDays(Dates.today(), -1) -> "Yesterday"
+        else -> Dates.fmtDay(day)
+    }
+
+    /** One Reporting row: coloured badge disc (✓ completed / + added /
+     *  ✎ date-changed, per the reference activity log), entry text + time,
+     *  and the entry's project right-aligned when it has one. */
+    private fun activityRow(a: ActivityItem): LinearLayout {
+        val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+        rowL.gravity = Gravity.CENTER_VERTICAL
+        rowL.setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+        val badgeSpec = when (a.type) {
+            "complete" -> "✓" to Glass.GREEN
+            "create" -> "+" to Glass.GREEN
+            "reschedule" -> "✎" to 0xFFE79B2E.toInt()
+            "delete" -> "✕" to Glass.overdue(this)
+            "focus" -> "◎" to TD_GREY
+            else -> "•" to TD_GREY
+        }
+        val badge = tv(badgeSpec.first, 13f, 0xFFFFFFFF.toInt(), true)
+        badge.gravity = Gravity.CENTER
+        badge.background = ovalDrawable(badgeSpec.second)
+        badge.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f))
+        badge.contentDescription = a.type
+        rowL.addView(badge)
+        val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+        colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        colL.addView(tv(a.text, 15f))
+        colL.addView(tv(fmtWhen(a.at), 13f, Glass.muted(this@MainActivity)))
+        rowL.addView(colL)
+        val pr = a.projectId?.let { pid -> Store.state.projects.find { it.id == pid } }
+        if (pr != null) {
+            val right = tv(pr.name + " #", 13f, Glass.muted(this@MainActivity))
+            right.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8f) }
+            rowL.addView(right)
+        }
+        return rowL
+    }
 
     private fun renderHistory() {
         if (Store.state.activities.isEmpty()) {
             content.addView(emptyView("🕘", "Nothing yet — your activity will appear here."))
             return
         }
-        val c = card(8)
-        Store.state.activities.take(150).forEach { a ->
-            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
-            rowL.setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-            val icon = when (a.type) {
-                "create" -> "➕"; "complete" -> "✅"; "delete" -> "🗑️"
-                "seed" -> "🌱"; "backup" -> "💾"; "focus" -> "🎯"; else -> "•"
+        // Day-grouped Reporting (Correction Round 2, F-1): groups come
+        // from Team Two's Stats.groupActivitiesByDay — newest day first,
+        // entries in log order within the day.
+        val shown = Store.state.activities.take(historyShown)
+        Stats.groupActivitiesByDay(shown).forEach { (day, items) ->
+            content.addView(sectionHeader(historyDayLabel(day)))
+            val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
+            g.background = roundedRect(TD_CARD, 14f); g.layoutParams = lp(b = dp(10f))
+            items.forEachIndexed { i, a ->
+                if (i > 0) {
+                    val h = hairline()
+                    h.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f))).apply { leftMargin = dp(16f); rightMargin = dp(16f) }
+                    g.addView(h)
+                }
+                g.addView(activityRow(a))
             }
-            val ic = tv(icon, 15f); ic.layoutParams = LinearLayout.LayoutParams(dp(30f), -2)
-            rowL.addView(ic)
-            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
-            colL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            colL.addView(tv(a.text, 15f))
-            colL.addView(tv(fmtWhen(a.at), 13f, Glass.muted(this@MainActivity)))
-            rowL.addView(colL)
-            c.addView(rowL)
+            content.addView(g)
         }
-        content.addView(c)
+        if (Store.state.activities.size > shown.size) {
+            val more = ghostBtn("Show older activity") { historyShown += 150; render() }
+            more.layoutParams = lp(t = dp(4f))
+            content.addView(more)
+        }
     }
 
     /* ----- Ramble ----- */
@@ -2936,7 +5240,176 @@ class MainActivity : Activity() {
             if (!popSheet()) attemptCloseSheet()
             return
         }
+        if (selectMode) { exitSelectMode(); return }
         if (sub != null) { sub = null; render(); return }
         super.onBackPressed()
+    }
+}
+
+/** Productivity goal ring (B2): track + arc starting at 12 o'clock,
+ *  sweeping clockwise with a rounded cap, and a centre graphic drawn
+ *  on Canvas — kind 0 = GREY medal, 1 = GREY trophy, 2 = RED karma pin
+ *  (ANALYSIS §7–§9: only the Karma pin is red). */
+class GoalRingView(
+    ctx: android.content.Context,
+    private val fraction: Float,
+    private val arcColor: Int,
+    private val trackColor: Int,
+    private val centreKind: Int
+) : View(ctx) {
+    private val density = ctx.resources.displayMetrics.density
+    private fun dpf(v: Float) = v * density
+    private val trackPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = dpf(5f)
+        color = trackColor
+    }
+    private val arcPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = dpf(5f)
+        strokeCap = android.graphics.Paint.Cap.ROUND
+        color = arcColor
+    }
+    private val greyPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFB0B0B0.toInt()
+    }
+    private val greyStroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = dpf(3f)
+        color = 0xFFB0B0B0.toInt()
+        strokeCap = android.graphics.Paint.Cap.ROUND
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        val inset = dpf(5f)
+        val rect = android.graphics.RectF(inset, inset, width - inset, height - inset)
+        canvas.drawArc(rect, 0f, 360f, false, trackPaint)
+        if (fraction > 0f) canvas.drawArc(rect, -90f, 360f * fraction.coerceIn(0f, 1f), false, arcPaint)
+        val cx = width / 2f
+        val cy = height / 2f
+        val r = Math.min(width, height) * 0.19f
+        when (centreKind) {
+            0 -> {
+                // Medal: two ribbon strokes above a ring with a check.
+                canvas.drawLine(cx - r * 0.55f, cy - r * 1.15f, cx - r * 0.12f, cy - r * 0.30f, greyStroke)
+                canvas.drawLine(cx + r * 0.55f, cy - r * 1.15f, cx + r * 0.12f, cy - r * 0.30f, greyStroke)
+                greyStroke.style = android.graphics.Paint.Style.STROKE
+                canvas.drawCircle(cx, cy + r * 0.28f, r * 0.62f, greyStroke)
+                canvas.drawLine(cx - r * 0.30f, cy + r * 0.28f, cx - r * 0.05f, cy + r * 0.52f, greyStroke)
+                canvas.drawLine(cx - r * 0.05f, cy + r * 0.52f, cx + r * 0.34f, cy - r * 0.05f, greyStroke)
+            }
+            1 -> {
+                // Trophy: filled cup + handles + stem + base.
+                greyPaint.style = android.graphics.Paint.Style.FILL
+                val cup = android.graphics.RectF(cx - r, cy - r * 0.95f, cx + r, cy + r * 0.05f)
+                canvas.drawRoundRect(cup, dpf(3f), dpf(3f), greyPaint)
+                greyStroke.style = android.graphics.Paint.Style.STROKE
+                canvas.drawArc(android.graphics.RectF(cx - r * 1.45f, cy - r * 0.85f, cx - r * 0.55f, cy - r * 0.05f), 90f, 180f, false, greyStroke)
+                canvas.drawArc(android.graphics.RectF(cx + r * 0.55f, cy - r * 0.85f, cx + r * 1.45f, cy - r * 0.05f), -90f, 180f, false, greyStroke)
+                canvas.drawRect(cx - r * 0.16f, cy + r * 0.05f, cx + r * 0.16f, cy + r * 0.55f, greyPaint)
+                canvas.drawRect(cx - r * 0.55f, cy + r * 0.55f, cx + r * 0.55f, cy + r * 0.82f, greyPaint)
+            }
+            else -> {
+                // Karma pin: solid red teardrop with a white centre dot.
+                val pin = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                    color = 0xFFE56864.toInt()
+                }
+                canvas.drawCircle(cx, cy - r * 0.22f, r * 0.74f, pin)
+                val path = android.graphics.Path()
+                path.moveTo(cx - r * 0.60f, cy + r * 0.18f)
+                path.lineTo(cx + r * 0.60f, cy + r * 0.18f)
+                path.lineTo(cx, cy + r * 1.10f)
+                path.close()
+                canvas.drawPath(path, pin)
+                val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                    color = 0xFFFFFFFF.toInt()
+                }
+                canvas.drawCircle(cx, cy - r * 0.22f, r * 0.30f, dot)
+            }
+        }
+    }
+}
+
+/** Karma trend area chart (B2, ANALYSIS §9): translucent dark-red
+ *  fill under the curve, a salmon dot on every point, faint vertical
+ *  gridlines dropping from the dots, and the TWO-TONE line — bright
+ *  salmon over the first segments, the rest of the curve carried by
+ *  the fill's top edge only. Values arrive oldest → newest. */
+class KarmaTrendView(
+    ctx: android.content.Context,
+    private val values: List<Int>
+) : View(ctx) {
+    private val density = ctx.resources.displayMetrics.density
+    private fun dpf(v: Float) = v * density
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        if (values.isEmpty()) return
+        val padL = dpf(10f); val padR = dpf(10f)
+        val padT = dpf(16f); val padB = dpf(12f)
+        val w = width - padL - padR
+        val h = height - padT - padB
+        val maxV = Math.max(1, values.maxOrNull() ?: 1)
+        val pts = values.mapIndexed { i, v ->
+            val x = padL + if (values.size == 1) w / 2f else w * i / (values.size - 1)
+            val y = padT + (1f - v.toFloat() / maxV) * h
+            x to y
+        }
+        val baseline = padT + h
+        // Area fill.
+        val fill = android.graphics.Path()
+        fill.moveTo(pts.first().first, pts.first().second)
+        for (i in 1 until pts.size) fill.lineTo(pts[i].first, pts[i].second)
+        fill.lineTo(pts.last().first, baseline)
+        fill.lineTo(pts.first().first, baseline)
+        fill.close()
+        val fillPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+            color = Todoist.KARMA_FILL
+        }
+        canvas.drawPath(fill, fillPaint)
+        // Faint drop-lines from each dot to the baseline.
+        val grid = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = dpf(1f)
+            color = android.graphics.Color.argb(36, 255, 255, 255)
+        }
+        pts.forEach { (x, y) -> canvas.drawLine(x, y, x, baseline, grid) }
+        // Rest of the curve: only the fill's boundary, a muted edge.
+        if (pts.size > 3) {
+            val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dpf(2f)
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                color = 0xFF6B4A4A.toInt()
+            }
+            val p2 = android.graphics.Path()
+            p2.moveTo(pts[2].first, pts[2].second)
+            for (i in 3 until pts.size) p2.lineTo(pts[i].first, pts[i].second)
+            canvas.drawPath(p2, edge)
+        }
+        // Bright segment: points 0 → 2 in vivid salmon.
+        if (pts.size >= 2) {
+            val bright = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dpf(3f)
+                strokeCap = android.graphics.Paint.Cap.ROUND
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                color = Todoist.SALMON
+            }
+            val p1 = android.graphics.Path()
+            p1.moveTo(pts[0].first, pts[0].second)
+            for (i in 1 until minOf(3, pts.size)) p1.lineTo(pts[i].first, pts[i].second)
+            canvas.drawPath(p1, bright)
+        }
+        // Dots on every point.
+        val dotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+            color = Todoist.SALMON
+        }
+        pts.forEach { (x, y) -> canvas.drawCircle(x, y, dpf(4.5f), dotPaint) }
     }
 }

@@ -14,6 +14,9 @@ object Store {
 
     val ctx: Context get() = appCtx
 
+    /** Default Quick Add chip ids, in display order (Customize Quick Add). */
+    val DEFAULT_CHIPS = listOf("date", "attachment", "priority", "reminders", "project", "labels", "description", "deadline", "location")
+
     fun init(ctx: Context) {
         appCtx = ctx.applicationContext
         val f = File(appCtx.filesDir, FILE)
@@ -90,10 +93,13 @@ object Store {
         return l
     }
 
-    fun logActivity(type: String, text: String) {
-        state.activities.add(0, ActivityItem(uid(), type, text, System.currentTimeMillis()))
-        if (state.activities.size > 2000) {
-            state.activities = state.activities.take(2000).toMutableList()
+    fun logActivity(type: String, text: String, projectId: String? = null) {
+        state.activities.add(0, ActivityItem(uid(), type, text, System.currentTimeMillis(), projectId))
+        // Full reporting history: the activity cap is effectively unbounded
+        // (100,000 entries). Completions are never truncated anywhere —
+        // only this activity feed has a (very high) safety cap.
+        if (state.activities.size > 100000) {
+            state.activities = state.activities.take(100000).toMutableList()
         }
     }
 
@@ -126,6 +132,14 @@ object Store {
             state.filters = fresh.filters
             state.completions = fresh.completions
             state.activities = fresh.activities
+            state.sections = fresh.sections
+            state.dailyGoal = fresh.dailyGoal
+            state.weeklyGoal = fresh.weeklyGoal
+            state.karmaPoints = fresh.karmaPoints
+            state.quickAddChips = fresh.quickAddChips
+            state.quickAddHiddenChips = fresh.quickAddHiddenChips
+            state.comments = fresh.comments
+            state.templates = fresh.templates
             state.tasks.forEach { Reminders.sync(appCtx, it); Reminders.syncGeo(appCtx, it) }
             save()
             Db.rebuildFromState(state)
@@ -176,10 +190,11 @@ object Store {
         t.dueTime = p.dueTime ?: t.dueTime
         t.recurrence = p.recurrence ?: t.recurrence
         t.durationMin = p.durationMin ?: t.durationMin
+        t.deadline = p.deadline ?: t.deadline
         if (p.projectName != null) t.projectId = projByName(p.projectName!!).id
         p.labelNames.forEach { n -> t.labelIds.add(labelByName(n).id) }
         if (state.tasks.none { it.id == t.id }) state.tasks.add(t)
-        logActivity("create", "Added \"" + t.title + "\"")
+        logActivity("create", "Added \"" + t.title + "\"", t.projectId)
         Reminders.sync(appCtx, t)
         save()
         return t
@@ -193,7 +208,9 @@ object Store {
         val comp = CompletionItem(uid(), id, t.title, t.projectId, Dates.today(), System.currentTimeMillis())
         state.completions.add(0, comp)
         Db.logCompletion(comp)
-        logActivity("complete", "Completed \"" + t.title + "\"")
+        // Karma rule: see Karma.kt — points by the completed task's priority.
+        state.karmaPoints += karmaFor(t.priority)
+        logActivity("complete", "Completed \"" + t.title + "\"", t.projectId)
         return if (t.recurrence != null) {
             // Advance until the next occurrence is no longer in the past —
             // completing a daily task that is 5 days overdue used to move it
@@ -222,9 +239,228 @@ object Store {
         val t = state.tasks[i]
         Reminders.drop(appCtx, t)
         Reminders.clearGeo(appCtx, t)
-        logActivity("delete", "Deleted \"" + t.title + "\"")
+        logActivity("delete", "Deleted \"" + t.title + "\"", t.projectId)
         state.tasks.removeAt(i)
         save()
         return t
+    }
+
+    /* ---------- karma ---------- */
+
+    // Delegates to Karma.kt — single source for the points table.
+    private fun karmaFor(priority: Int): Int = Karma.pointsFor(priority)
+
+    /* ---------- reschedule overdue ---------- */
+
+    /** Move every overdue task to today (recurring tasks advance by their
+     *  recurrence until no longer overdue). Returns (taskId → previous
+     *  dueDate) pairs in task order, for Undo via restoreDueDates. */
+    fun rescheduleOverdue(): List<Pair<String, String?>> {
+        val today = Dates.today()
+        val previous = mutableListOf<Pair<String, String?>>()
+        for (t in state.tasks) {
+            val due = t.dueDate ?: continue
+            if (due >= today) continue
+            previous.add(t.id to t.dueDate)
+            if (t.recurrence != null) {
+                var guard = 0
+                do { t.dueDate = Dates.advanceDate(t) } while (
+                    t.dueDate != null && t.dueDate!! < today && ++guard < 400
+                )
+            } else {
+                t.dueDate = today
+            }
+            Reminders.sync(appCtx, t)
+        }
+        if (previous.isNotEmpty()) {
+            logActivity("reschedule", "Rescheduled " + previous.size + " overdue task(s) to today")
+            save()
+        }
+        return previous
+    }
+
+    fun restoreDueDates(previous: List<Pair<String, String?>>) {
+        for ((id, old) in previous) {
+            val t = byId(id) ?: continue
+            t.dueDate = old
+            Reminders.sync(appCtx, t)
+        }
+        save()
+    }
+
+    /* ---------- bulk (multi-select) operations ---------- */
+
+    fun bulkMoveToProject(ids: Collection<String>, projectId: String?) {
+        val set = ids.toSet()
+        state.tasks.forEach { if (it.id in set) it.projectId = projectId }
+        save()
+    }
+
+    fun bulkAddLabel(ids: Collection<String>, labelId: String) {
+        val set = ids.toSet()
+        state.tasks.forEach { if (it.id in set && labelId !in it.labelIds) it.labelIds.add(labelId) }
+        save()
+    }
+
+    fun bulkSetPriority(ids: Collection<String>, priority: Int) {
+        val set = ids.toSet()
+        val p = priority.coerceIn(1, 4)
+        state.tasks.forEach { if (it.id in set) it.priority = p }
+        save()
+    }
+
+    fun bulkSetSection(ids: Collection<String>, sectionId: String?) {
+        val set = ids.toSet()
+        state.tasks.forEach { if (it.id in set) it.sectionId = sectionId }
+        save()
+    }
+
+    /** Same reminder cleanup as deleteTask; returns the removed tasks so
+     *  the UI can undo. One activity entry, one save. */
+    fun bulkDelete(ids: Collection<String>): List<TaskItem> {
+        val set = ids.toSet()
+        val removed = state.tasks.filter { it.id in set }
+        if (removed.isEmpty()) return removed
+        removed.forEach { Reminders.drop(appCtx, it); Reminders.clearGeo(appCtx, it) }
+        state.tasks.removeAll { it.id in set }
+        logActivity("delete", "Deleted " + removed.size + " tasks")
+        save()
+        return removed
+    }
+
+    /* ---------- sections ---------- */
+
+    fun addSection(projectId: String, name: String): SectionItem {
+        val next = (state.sections.filter { it.projectId == projectId }.maxOfOrNull { it.order } ?: -1) + 1
+        val s = SectionItem(uid(), projectId, name, false, next)
+        state.sections.add(s)
+        save()
+        return s
+    }
+
+    fun renameSection(id: String, name: String) {
+        state.sections.find { it.id == id }?.name = name
+        save()
+    }
+
+    fun deleteSection(id: String) {
+        state.tasks.forEach { if (it.sectionId == id) it.sectionId = null }
+        state.sections.removeAll { it.id == id }
+        save()
+    }
+
+    fun setSectionCollapsed(id: String, collapsed: Boolean) {
+        state.sections.find { it.id == id }?.collapsed = collapsed
+        save()
+    }
+
+    /* ---------- goals & Quick Add chip prefs ---------- */
+
+    fun setDailyGoal(n: Int) {
+        state.dailyGoal = n.coerceIn(1, 999)
+        save()
+    }
+
+    fun setWeeklyGoal(n: Int) {
+        state.weeklyGoal = n.coerceIn(1, 999)
+        save()
+    }
+
+    /* ---------- display prefs ---------- */
+
+    fun setDisplayShowCompleted(show: Boolean) {
+        state.displayShowCompleted = show
+        save()
+    }
+
+    fun setDisplayLayout(layout: String) {
+        if (layout !in listOf("list", "board", "calendar")) return
+        state.displayLayout = layout
+        save()
+    }
+
+    fun quickAddChipOrder(): List<String> =
+        if (state.quickAddChips.isNotEmpty()) state.quickAddChips.toList() else DEFAULT_CHIPS
+
+    fun setQuickAddChips(order: List<String>, hidden: List<String>) {
+        state.quickAddChips = order.toMutableList()
+        state.quickAddHiddenChips = hidden.toMutableList()
+        save()
+    }
+
+    /* ---------- comments ---------- */
+
+    /** Blank text is not stored; the returned item then has id "" so the
+     *  caller can tell nothing was added (contract keeps a non-null
+     *  CommentItem return). */
+    fun addComment(projectId: String?, taskId: String?, text: String): CommentItem {
+        val clean = text.trim()
+        if (clean.isEmpty()) return CommentItem("", projectId, taskId, "", System.currentTimeMillis())
+        val c = CommentItem(uid(), projectId, taskId, clean, System.currentTimeMillis())
+        state.comments.add(c)
+        save()
+        return c
+    }
+
+    fun deleteComment(id: String) {
+        state.comments.removeAll { it.id == id }
+        save()
+    }
+
+    /** Comments for one project (null = global/inbox), newest first. */
+    fun commentsFor(projectId: String?): List<CommentItem> =
+        state.comments.filter { it.projectId == projectId }.sortedByDescending { it.at }
+
+    /* ---------- project templates ---------- */
+
+    fun saveProjectAsTemplate(projectId: String, name: String): TemplateItem? {
+        val p = state.projects.find { it.id == projectId } ?: return null
+        val tpl = TemplateItem(
+            id = uid(),
+            name = name,
+            projectName = p.name,
+            color = p.color,
+            sectionNames = state.sections.filter { it.projectId == projectId }
+                .sortedBy { it.order }.map { it.name },
+            taskTitles = state.tasks.filter { it.projectId == projectId }.map { it.title }
+        )
+        state.templates.add(tpl)
+        save()
+        return tpl
+    }
+
+    fun applyTemplate(templateId: String): ProjectItem? {
+        val tpl = state.templates.find { it.id == templateId } ?: return null
+        val p = ProjectItem(uid(), tpl.projectName, tpl.color)
+        state.projects.add(p)
+        tpl.sectionNames.forEachIndexed { i, n ->
+            state.sections.add(SectionItem(uid(), p.id, n, false, i))
+        }
+        // Tasks were captured without a section mapping, so they land
+        // sectionless in the new project (documented limitation).
+        tpl.taskTitles.forEach { title ->
+            state.tasks.add(TaskItem(id = uid(), title = title, projectId = p.id, priority = 4))
+        }
+        save()
+        return p
+    }
+
+    /* ---------- Task & Email Assist (offline text import) ---------- */
+
+    /** One task per non-empty line; each line runs through the full
+     *  natural-language Parser. A non-null [projectId] forces every
+     *  created task into that project (overriding any #project in the
+     *  line). Returns how many tasks were created. */
+    fun importTasksFromText(text: String, projectId: String?): Int {
+        var count = 0
+        for (line in text.lines()) {
+            val clean = line.trim()
+            if (clean.isEmpty()) continue
+            val t = addTaskFromParse(Parser.parse(clean))
+            if (projectId != null) t.projectId = projectId
+            count++
+        }
+        if (count > 0) save()
+        return count
     }
 }

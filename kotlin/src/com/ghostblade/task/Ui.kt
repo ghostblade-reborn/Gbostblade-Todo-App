@@ -12,6 +12,7 @@ import android.os.Build
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.ImageView
+import android.widget.LinearLayout
 import java.io.File
 
 /** Appearance preferences (glass style, accent, wallpaper, sounds). */
@@ -21,8 +22,11 @@ object Prefs {
     fun glass(ctx: Context): String = prefs(ctx).getString("glass", "default") ?: "default"
     fun accent(ctx: Context): String = prefs(ctx).getString("accent", "crimson") ?: "crimson"
     fun wallpaper(ctx: Context): String = prefs(ctx).getString("wallpaper", "aurora") ?: "aurora"
-    /** aurora (colour wallpapers) | black (Apple Music dark) | white (frosted light). */
-    fun theme(ctx: Context): String = prefs(ctx).getString("theme", "aurora") ?: "aurora"
+    /** todoist (DEFAULT: flat Todoist dark, see the Todoist tokens) | aurora
+     *  (colour wallpapers) | black (Apple Music dark) | white (frosted light).
+     *  Only an explicitly stored choice overrides the Todoist default, so
+     *  existing users who picked a theme keep it. */
+    fun theme(ctx: Context): String = prefs(ctx).getString("theme", "todoist") ?: "todoist"
     /** Apple Music-style red secondary text. */
     fun redText(ctx: Context): Boolean = prefs(ctx).getBoolean("red_text", false)
     fun set(ctx: Context, key: String, value: String) = prefs(ctx).edit().putString(key, value).apply()
@@ -45,6 +49,90 @@ object Accents {
     fun soft(ctx: Context): Int = Color.argb(46, Color.red(base(ctx)), Color.green(base(ctx)), Color.blue(base(ctx)))
 }
 
+/** Todoist design tokens — pixel-sampled from Sir's reference screenshots
+ *  (TEAMONE-ANALYSIS-SCREENS.md §0.1; sampled values win over nominal brand
+ *  values). This is the DEFAULT appearance: Prefs.theme() defaults to
+ *  "todoist". The legacy Aurora/Black/White glass themes and the Accents
+ *  picker are untouched and keep working when explicitly selected.
+ *
+ *  Helper index for the MainActivity implementer (all in Glass below):
+ *   - groupedPanel(ctx, radiusDp) / groupedContainer(ctx, rows, insetDp, radiusDp)
+ *       flat #282828 grouped list, radius on the GROUP only, 1px hairlines.
+ *   - flatCard(ctx, radiusDp, fill) — flat solid card drawable.
+ *   - checkCircle(ctx, priority, filled) — priority ring (P1 FIXED red).
+ *   - qaChipBg(ctx, on) — Quick Add chip (rounded RECTANGLE, #3F3F3F).
+ *   - accentSquareBg(ctx, radiusDp) — FAB + Ramble + Send shared shape.
+ *   - navBarBg(ctx) / navPillBg(ctx) — flat nav bar + selected pill.
+ *   - todoistSheetBg(ctx, radiusDp, fill) / dragHandle(ctx) — sheets.
+ *   - popupBg(ctx, radiusDp) — translucent popup card (overflow menu).
+ *   - crossfade(from, to, ms) / fadeIn(v, ms) — NO slide, alpha only.
+ *  Colour logic: Todoist.priorityColor(p), Todoist.dateColor(dueDate). */
+object Todoist {
+    val BG = 0xFF212121.toInt()          // screens (lists, Display)
+    val SHEET = 0xFF1F1F1F.toInt()       // Quick Add sheet / paywall bg
+    val CARD = 0xFF282828.toInt()        // cards / grouped containers / popups
+    val POPUP = 0xFF2C2C2C.toInt()       // "+" popup (elevation-lit card)
+    val NAV = 0xFF262626.toInt()         // bottom nav bar fill
+    val NAV_PILL = 0xFF472524.toInt()    // selected nav pill (icon only)
+    val RED = 0xFFD04349.toInt()         // rendered primary red (FAB/Done/send)
+    val RED_BRAND = 0xFFE44332.toInt()   // nominal brand red (light-theme ref)
+    val SALMON = 0xFFE56864.toInt()      // text red: Reschedule, Edit goal, nav label, overdue
+    val CHIP = 0xFF3F3F3F.toInt()        // Quick Add chip fill
+    val PROD_BG = 0xFF322F2A.toInt()     // Productivity content background
+    val EMPHASIS = 0xFF363636.toInt()    // Browse emphasis banner (Try Pro slot)
+    val SCRIM_LIST = 0xFF141414.toInt()  // list dimmed behind Quick Add
+    val HAIRLINE = 0xFF1F1F1F.toInt()    // divider inside #282828 groups
+    val TEXT = 0xFFFFFFFF.toInt()        // primary text on Todoist dark
+    val MUTED = 0xFFB0B0B0.toInt()       // secondary text (neutral, no blue tint)
+    val FAINT = 0xFF9E9E9E.toInt()       // counts / unselected nav labels
+    val PLACEHOLDER = 0xFF8A8A8A.toInt() // Quick Add placeholder
+    val HANDLE = 0xFF595959.toInt()      // sheet drag handle
+    val PRO_ORANGE = 0xFFEF7E18.toInt()
+    val PRO_CTA_ORANGE = 0xFFF48418.toInt()
+    val PRO_COL_BG = 0xFF412B06.toInt()
+    val KARMA_FILL = 0xFF3A2A2A.toInt()  // karma trend area fill
+    val RING_TRACK = 0xFF525252.toInt()  // goal ring track
+    val CHART_BAR = 0xFF8A8A8A.toInt()   // productivity bars (grey, not red)
+
+    // Priority colours (sampled ranges in analysis §0.1; single values chosen):
+    val P1 = 0xFFE44332.toInt()  // red — FIXED, never the user accent
+    val P2 = 0xFFFF9F0A.toInt()  // orange
+    val P3 = 0xFF4A90D9.toInt()  // blue
+    val P4 = 0xFF9E9E9E.toInt()  // grey
+
+    // Semantic date colours:
+    val DATE_TODAY = 0xFF2FB457.toInt()    // green
+    val DATE_TOMORROW = 0xFFE79B2E.toInt() // amber
+    val DATE_OVERDUE = SALMON              // salmon red
+    val DATE_NONE = FAINT                  // grey (future / no date)
+
+    fun priorityColor(priority: Int): Int = when (priority) {
+        1 -> P1; 2 -> P2; 3 -> P3; else -> P4
+    }
+
+    /** Faint priority tint INSIDE the unchecked checkbox circle
+     *  (strongest for P1 — analysis §1: a translucent dark-red fill). */
+    fun priorityFill(priority: Int): Int = when (priority) {
+        1 -> Color.argb(64, 228, 67, 50)
+        2 -> Color.argb(44, 255, 159, 10)
+        3 -> Color.argb(44, 74, 144, 217)
+        else -> Color.TRANSPARENT
+    }
+
+    /** Semantic colour for a due-date segment: green Today, amber Tomorrow,
+     *  salmon overdue, grey future/none. dueDate is "yyyy-MM-dd" or null. */
+    fun dateColor(dueDate: String?): Int {
+        if (dueDate == null) return DATE_NONE
+        val today = Dates.today()
+        return when {
+            dueDate < today -> DATE_OVERDUE
+            dueDate == today -> DATE_TODAY
+            dueDate == Dates.addDays(today, 1) -> DATE_TOMORROW
+            else -> DATE_NONE
+        }
+    }
+}
+
 /** Liquid Glass look on native views: translucent fill + specular top line +
  *  soft rim, layered over the aurora/photo wallpaper behind.
  *
@@ -52,22 +140,34 @@ object Accents {
  *  nesting — page card 24 → inner card 18 → chip 12; standalone: input 14,
  *  row 20, card 24, sheet 30, nav 34. Type scale: Display 40 · Title 24 ·
  *  Headline 17 · Section 16 · Body 15 · Secondary 13 · Caption 11.
- *  (Glyph-only sizes — icons, chevrons, the FAB "+" — sit outside the scale.) */
+ *  (Glyph-only sizes — icons, chevrons, the FAB "+" — sit outside the scale.)
+ *
+ *  DEFAULT theme is now Todoist (see the Todoist token object above):
+ *  panel/sheetPanel/accentGradient/chip/sheetChip/wallpaperView return the
+ *  flat Todoist surfaces when Prefs.theme() == "todoist"; the glass code
+ *  below them serves the explicit Aurora/Black/White themes unchanged. */
 object Glass {
     fun dp(ctx: Context, v: Float): Int = (v * ctx.resources.displayMetrics.density + 0.5f).toInt()
 
     fun isWhite(ctx: Context) = Prefs.theme(ctx) == "white"
     fun isBlack(ctx: Context) = Prefs.theme(ctx) == "black"
+    fun isTodoist(ctx: Context) = Prefs.theme(ctx) == "todoist"
 
     /** Theme-aware primary text colour. */
-    fun text(ctx: Context): Int = if (isWhite(ctx)) 0xFF131318.toInt() else TEXT
+    fun text(ctx: Context): Int = when {
+        isWhite(ctx) -> 0xFF131318.toInt()
+        isTodoist(ctx) -> Todoist.TEXT
+        else -> TEXT
+    }
 
     /** Theme-aware secondary text colour; the Red text option turns it into
      *  the accent colour (Apple Music's red artist/detail lines). */
     fun muted(ctx: Context): Int = when {
         Prefs.redText(ctx) && isWhite(ctx) -> Accents.acc2(ctx)
+        Prefs.redText(ctx) && isTodoist(ctx) -> Todoist.SALMON
         Prefs.redText(ctx) -> Accents.base(ctx)
         isWhite(ctx) -> 0xFF62626D.toInt()
+        isTodoist(ctx) -> Todoist.MUTED
         else -> MUTED
     }
 
@@ -82,6 +182,14 @@ object Glass {
      *  themed for Aurora / Black / White appearances. */
     fun panel(ctx: Context, radiusDp: Float = 22f, strong: Boolean = false): Drawable {
         val r = dp(ctx, radiusDp).toFloat()
+        if (isTodoist(ctx)) {
+            // Flat Todoist card: solid #282828, no glass, no gradient, no rim.
+            // (Nav bar wants Todoist.NAV instead — use navBarBg() there.)
+            val flat = GradientDrawable()
+            flat.cornerRadius = r
+            flat.setColor(Todoist.CARD)
+            return flat
+        }
         if (isWhite(ctx)) {
             val base = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
@@ -127,6 +235,14 @@ object Glass {
      *  wallpaper, translucent enough for the blurred backdrop to glow through. */
     fun sheetPanel(ctx: Context, radiusDp: Float = 30f): Drawable {
         val r = dp(ctx, radiusDp).toFloat()
+        if (isTodoist(ctx)) {
+            // Flat Todoist sheet: solid #1F1F1F (Quick Add / paywall shade).
+            // The Display sheet wants Todoist.BG instead — todoistSheetBg().
+            val flat = GradientDrawable()
+            flat.cornerRadius = r
+            flat.setColor(Todoist.SHEET)
+            return flat
+        }
         if (isWhite(ctx)) {
             val base = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
@@ -168,6 +284,13 @@ object Glass {
     }
 
     fun accentGradient(ctx: Context, radiusDp: Float): Drawable {
+        if (isTodoist(ctx)) {
+            // Flat solid Todoist red — no gradient on Todoist surfaces.
+            val flat = GradientDrawable()
+            flat.cornerRadius = dp(ctx, radiusDp).toFloat()
+            flat.setColor(Todoist.RED)
+            return flat
+        }
         val g = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Accents.acc1(ctx), Accents.acc2(ctx))
@@ -180,6 +303,18 @@ object Glass {
     fun chip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 14f).toFloat()
+        if (isTodoist(ctx)) {
+            // on = selected nav pill (#472524 oval); off = flat chip grey.
+            // Prefer navPillBg()/qaChipBg() in new code — this branch only
+            // keeps legacy chip() call sites on-palette in the Todoist theme.
+            if (on) {
+                g.cornerRadius = dp(ctx, 999f).toFloat()
+                g.setColor(Todoist.NAV_PILL)
+            } else {
+                g.setColor(Todoist.CHIP)
+            }
+            return g
+        }
         if (isWhite(ctx)) {
             if (on) {
                 g.setColor(Color.argb(58, 20, 20, 35))
@@ -205,6 +340,15 @@ object Glass {
     fun sheetChip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 999f).toFloat()
+        if (isTodoist(ctx)) {
+            // Binding correction: QA chips are ROUNDED RECTANGLES (#3F3F3F,
+            // ~11dp radius), never full pills. "on" adds a salmon rim only —
+            // the state colour lives in the chip's text/icon (green date).
+            g.cornerRadius = dp(ctx, 11f).toFloat()
+            g.setColor(Todoist.CHIP)
+            if (on) g.setStroke(dp(ctx, 1f), Todoist.SALMON)
+            return g
+        }
         if (isWhite(ctx) && !on) {
             g.setColor(0xFFE8E8ED.toInt())
             g.setStroke(dp(ctx, 1f), Color.argb(50, 20, 20, 35))
@@ -221,22 +365,26 @@ object Glass {
         return g
     }
 
+    /** Checkbox: ring colour = PRIORITY colour in EVERY theme — P1 is the
+     *  FIXED Todoist red (Todoist.P1), never the user accent (Monitoring
+     *  binding correction). Unchecked circles carry a faint tint of their
+     *  priority colour inside; ring 3dp for P1–P3, 2dp for P4.
+     *  Checked (filled): solid priority colour — OUR documented choice:
+     *  the reference recording contains NO completion animation and no
+     *  completion ground truth, so we keep only this subtle fill
+     *  (previously iOS green #30D158 in every theme). */
     fun checkCircle(ctx: Context, priority: Int, filled: Boolean): Drawable {
         val g = GradientDrawable()
         g.shape = GradientDrawable.OVAL
-        val color = when (priority) {
-            1 -> Accents.base(ctx)
-            2 -> 0xFFFF9F0A.toInt()
-            3 -> 0xFF0A84FF.toInt()
-            else -> if (isWhite(ctx)) Color.argb(185, 40, 40, 55) else Color.argb(160, 255, 255, 255)
-        }
-        if (filled) g.setColor(0xFF30D158.toInt()) else {
+        val ring = Todoist.priorityColor(priority)
+        if (filled) {
+            g.setColor(ring)
+        } else {
             g.setColor(
-                if (priority == 1) Accents.soft(ctx)
-                else if (isWhite(ctx)) Color.argb(20, 20, 20, 35)
-                else Color.argb(16, 255, 255, 255)
+                if (priority == 4 && isWhite(ctx)) Color.argb(20, 20, 20, 35)
+                else Todoist.priorityFill(priority)
             )
-            g.setStroke(dp(ctx, 2f), color)
+            g.setStroke(dp(ctx, if (priority in 1..3) 3f else 2f), ring)
         }
         return g
     }
@@ -257,6 +405,12 @@ object Glass {
             }
         }
         // Theme backgrounds (a custom photo, handled above, always wins).
+        if (Prefs.theme(ctx) == "todoist") {
+            // Flat Todoist screen background #212121 — no wallpaper, no blobs.
+            val v = View(ctx)
+            v.background = ColorDrawable(Todoist.BG)
+            return v
+        }
         if (Prefs.theme(ctx) == "black") {
             val v = View(ctx)
             v.background = ColorDrawable(0xFF000000.toInt())
@@ -337,6 +491,136 @@ object Glass {
         }
         v.background = LayerDrawable(layers.toTypedArray())
         return v
+    }
+
+    /* ---------------- Todoist components (Team One Impl-A) ----------------
+     * Additive helpers for the MainActivity implementer; the legacy glass
+     * helpers above are unchanged for the Aurora/Black/White themes.
+     * All colours come from the Todoist token object. */
+
+    /** Flat solid drawable — the base of every Todoist surface. */
+    fun flatDrawable(ctx: Context, fill: Int, radiusDp: Float): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, radiusDp).toFloat()
+        g.setColor(fill)
+        return g
+    }
+
+    /** Flat card drawable (#282828 by default, radius ~16dp on groups). */
+    fun flatCard(ctx: Context, radiusDp: Float = 16f, fill: Int = Todoist.CARD): Drawable =
+        flatDrawable(ctx, fill, radiusDp)
+
+    /** Grouped-container background: ONE flat #282828 panel whose OUTER
+     *  corners carry the radius; rows inside it stay square (analysis §1). */
+    fun groupedPanel(ctx: Context, radiusDp: Float = 16f): Drawable =
+        flatDrawable(ctx, Todoist.CARD, radiusDp)
+
+    /** 1px hairline divider view for inside a grouped container. */
+    fun groupDivider(ctx: Context, insetDp: Float = 50f): View {
+        val v = View(ctx)
+        v.background = ColorDrawable(Todoist.HAIRLINE)
+        v.layoutParams = LinearLayout.LayoutParams(-1, 1).apply { leftMargin = dp(ctx, insetDp) }
+        return v
+    }
+
+    /** Builds the Todoist grouped list: a flat #282828 LinearLayout with
+     *  rounded OUTER corners (clipped), the given rows stacked inside, and
+     *  a 1px hairline between consecutive rows. Rows keep their own padding;
+     *  give them NO background/margins of their own. dividerInsetDp aligns
+     *  the hairline with row titles (16 padding + 22 checkbox + 12 gap). */
+    fun groupedContainer(ctx: Context, rows: List<View>, dividerInsetDp: Float = 50f, radiusDp: Float = 16f): LinearLayout {
+        val box = LinearLayout(ctx)
+        box.orientation = LinearLayout.VERTICAL
+        box.background = groupedPanel(ctx, radiusDp)
+        box.clipToOutline = true
+        elevate(ctx, box, radiusDp, 0f)
+        rows.forEachIndexed { i, row ->
+            if (row.layoutParams == null)
+                row.layoutParams = LinearLayout.LayoutParams(-1, -2)
+            box.addView(row)
+            if (i < rows.size - 1) box.addView(groupDivider(ctx, dividerInsetDp))
+        }
+        return box
+    }
+
+    /** Quick Add chip background: rounded RECTANGLE, #3F3F3F, ~11dp radius.
+     *  `on` adds a salmon rim only — state colour goes on text/icon. */
+    fun qaChipBg(ctx: Context, on: Boolean = false): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, 11f).toFloat()
+        g.setColor(Todoist.CHIP)
+        if (on) g.setStroke(dp(ctx, 1f), Todoist.SALMON)
+        return g
+    }
+
+    /** Rounded-square accent button: the ONE shape shared by the FAB and
+     *  the Quick Add Ramble/Send buttons — solid #D04349, ~12dp radius. */
+    fun accentSquareBg(ctx: Context, radiusDp: Float = 12f): Drawable =
+        flatDrawable(ctx, Todoist.RED, radiusDp)
+
+    /** Bottom nav bar background: flat #262626, attached, no radius. */
+    fun navBarBg(ctx: Context): Drawable = ColorDrawable(Todoist.NAV)
+
+    /** Selected nav pill: fully-rounded oval #472524 behind the ICON only;
+     *  the label sits below it (salmon when selected). Crossfade it — never
+     *  slide it (binding correction). */
+    fun navPillBg(ctx: Context): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, 999f).toFloat()
+        g.setColor(Todoist.NAV_PILL)
+        return g
+    }
+
+    /** Sheet surface: solid fill (SHEET #1F1F1F for Quick Add; pass
+     *  Todoist.BG for the full-height Display sheet), radius ~28dp. */
+    fun todoistSheetBg(ctx: Context, radiusDp: Float = 28f, fill: Int = Todoist.SHEET): Drawable =
+        flatDrawable(ctx, fill, radiusDp)
+
+    /** Drag-handle drawable: grey pill (handle view is ~36x4dp). */
+    fun dragHandleBg(ctx: Context): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, 999f).toFloat()
+        g.setColor(Todoist.HANDLE)
+        return g
+    }
+
+    /** Drag handle view, 36x4dp, for a LinearLayout sheet column. */
+    fun dragHandle(ctx: Context): View {
+        val v = View(ctx)
+        v.background = dragHandleBg(ctx)
+        v.layoutParams = LinearLayout.LayoutParams(dp(ctx, 36f), dp(ctx, 4f))
+        return v
+    }
+
+    /** Popup card (overflow ⋮ menu): TRANSLUCENT dark — the list ghosts
+     *  through at ~91% opacity (analysis §3) — radius ~16dp. The priority /
+     *  project popups are opaque instead: use flatCard(CARD or POPUP). */
+    fun popupBg(ctx: Context, radiusDp: Float = 16f): Drawable {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(ctx, radiusDp).toFloat()
+        g.setColor(Color.argb(232, 28, 28, 28))
+        return g
+    }
+
+    /** Crossfade helper — the ONLY sanctioned tab/nav transition: alpha
+     *  only, NO lateral slide anywhere (binding correction). Fades `to`
+     *  in over `from`; `from` ends GONE with its alpha restored for reuse. */
+    fun crossfade(from: View?, to: View, durationMs: Long = 200L) {
+        to.visibility = View.VISIBLE
+        to.alpha = 0f
+        to.animate().alpha(1f).setDuration(durationMs).start()
+        if (from != null && from !== to) {
+            from.animate().alpha(0f).setDuration(durationMs).withEndAction {
+                from.visibility = View.GONE
+                from.alpha = 1f
+            }.start()
+        }
+    }
+
+    /** Simple alpha fade-in (section pop-in after a tab crossfade). */
+    fun fadeIn(v: View, durationMs: Long = 200L) {
+        v.alpha = 0f
+        v.animate().alpha(1f).setDuration(durationMs).start()
     }
 
     val TEXT = 0xFFF5F5F7.toInt()

@@ -226,6 +226,16 @@ object Db {
         return v
     }
 
+    /** Every distinct completion date, ascending — streak/trend fallback
+     *  when the in-memory completion list is unavailable. */
+    fun allCompletionDates(): List<String> {
+        val out = mutableListOf<String>()
+        val c = db.rawQuery("SELECT DISTINCT date FROM completions ORDER BY date ASC", null)
+        while (c.moveToNext()) out.add(c.getString(0))
+        c.close()
+        return out
+    }
+
     /** Longest run of consecutive days with at least one completion, all time. */
     fun bestStreak(): Int {
         val c = db.rawQuery("SELECT DISTINCT date FROM completions ORDER BY date ASC", null)
