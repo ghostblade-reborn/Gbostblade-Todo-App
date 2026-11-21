@@ -25,6 +25,7 @@ object Store {
             catch (e: Exception) { State() }
         } else State()
         if (!state.seeded) seed()
+        seedChecklistTemplatesIfNeeded()
         autoBackup()
         save()
         Db.init(appCtx)
@@ -61,13 +62,25 @@ object Store {
         TaskWidget.updateAll(appCtx)
     }
 
+    /** MANUAL order (v5 drag-sort): tasks that carry a manualOrder sort
+     *  by it, ahead of unordered tasks; everything else keeps the v4.0
+     *  rule (dueDate, priority, createdAt). See SHADOW-THREE-DESIGN §2. */
     val taskComparator = Comparator<TaskItem> { a, b ->
-        val da = a.dueDate ?: "9999"
-        val db = b.dueDate ?: "9999"
+        val am = a.manualOrder
+        val bm = b.manualOrder
         when {
-            da != db -> da.compareTo(db)
-            a.priority != b.priority -> a.priority - b.priority
-            else -> a.createdAt.compareTo(b.createdAt)
+            am != null && bm != null && am != bm -> am.compareTo(bm)
+            am != null && bm == null -> -1
+            am == null && bm != null -> 1
+            else -> {
+                val da = a.dueDate ?: "9999"
+                val db = b.dueDate ?: "9999"
+                when {
+                    da != db -> da.compareTo(db)
+                    a.priority != b.priority -> a.priority.compareTo(b.priority)
+                    else -> a.createdAt.compareTo(b.createdAt)
+                }
+            }
         }
     }
 
@@ -126,6 +139,7 @@ object Store {
             // Cancel the outgoing tasks' alarms/geofences first, so an import
             // never leaves orphan reminders firing for tasks it replaced.
             state.tasks.forEach { Reminders.drop(appCtx, it); Reminders.clearGeo(appCtx, it) }
+            state.habits.forEach { HabitReminders.cancel(appCtx, it.id) }
             state.tasks = fresh.tasks
             state.projects = fresh.projects
             state.labels = fresh.labels
@@ -140,7 +154,13 @@ object Store {
             state.quickAddHiddenChips = fresh.quickAddHiddenChips
             state.comments = fresh.comments
             state.templates = fresh.templates
+            state.habits = fresh.habits
+            state.habitLogs = fresh.habitLogs
+            state.countdowns = fresh.countdowns
+            state.checklistTemplates = fresh.checklistTemplates
+            state.dockModules = fresh.dockModules
             state.tasks.forEach { Reminders.sync(appCtx, it); Reminders.syncGeo(appCtx, it) }
+            state.habits.forEach { HabitReminders.sync(appCtx, it) }
             save()
             Db.rebuildFromState(state)
             true
@@ -462,5 +482,215 @@ object Store {
         }
         if (count > 0) save()
         return count
+    }
+
+    /* ---------- v5: checklist template seeds ---------- */
+
+    /** The two starter checklist templates (SHADOW-THREE-DESIGN §8.3)
+     *  are seeded exactly once per install, guarded by a prefs flag so
+     *  a user who deletes them never gets them back uninvited. */
+    private fun seedChecklistTemplatesIfNeeded() {
+        val prefs = appCtx.getSharedPreferences("gbt_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("cl_templates_seeded", false)) return
+        if (state.checklistTemplates.isEmpty()) {
+            state.checklistTemplates.add(
+                ChecklistTemplate(
+                    uid(), "Grocery Shopping Checklist",
+                    listOf("Fruit", "Vegetables", "Milk", "Eggs", "Bread", "Rice", "Chicken", "Spices")
+                )
+            )
+            state.checklistTemplates.add(
+                ChecklistTemplate(
+                    uid(), "Pre-Trip Preparation Checklist",
+                    listOf(
+                        "Check passport and visa", "Confirm transport",
+                        "Confirm accommodation", "Pack chargers", "Download tickets offline"
+                    )
+                )
+            )
+        }
+        prefs.edit().putBoolean("cl_templates_seeded", true).apply()
+    }
+
+    /* ---------- v5: habits ---------- */
+
+    fun habitById(id: String): HabitItem? = state.habits.find { it.id == id }
+
+    /** Get-or-create the single log for (habitId, date) — never two. */
+    fun habitLogFor(habitId: String, date: String): HabitLog {
+        var l = state.habitLogs.find { it.habitId == habitId && it.date == date }
+        if (l == null) {
+            l = HabitLog(uid(), habitId, date)
+            state.habitLogs.add(l)
+        }
+        return l
+    }
+
+    fun addHabit(h: HabitItem): HabitItem {
+        h.order = (state.habits.maxOfOrNull { it.order } ?: -1) + 1
+        state.habits.add(h)
+        logActivity("habit", "Started habit \"" + h.name + "\"")
+        HabitReminders.sync(appCtx, h)
+        save()
+        return h
+    }
+
+    fun updateHabit(h: HabitItem) {
+        logActivity("habit", "Updated habit \"" + h.name + "\"")
+        HabitReminders.sync(appCtx, h)
+        save()
+    }
+
+    fun archiveHabit(id: String, archived: Boolean) {
+        val h = habitById(id) ?: return
+        h.archived = archived
+        if (archived) HabitReminders.cancel(appCtx, id) else HabitReminders.sync(appCtx, h)
+        logActivity("habit", (if (archived) "Archived" else "Unarchived") + " habit \"" + h.name + "\"")
+        save()
+    }
+
+    /** Removes the habit and all its logs; returns them for Undo. */
+    fun deleteHabit(id: String): Pair<HabitItem, List<HabitLog>>? {
+        val h = habitById(id) ?: return null
+        val logs = state.habitLogs.filter { it.habitId == id }
+        HabitReminders.cancel(appCtx, id)
+        state.habits.removeAll { it.id == id }
+        state.habitLogs.removeAll { it.habitId == id }
+        logActivity("habit", "Deleted habit \"" + h.name + "\"")
+        save()
+        return h to logs
+    }
+
+    fun restoreHabit(h: HabitItem, logs: List<HabitLog>) {
+        if (state.habits.none { it.id == h.id }) state.habits.add(h)
+        logs.forEach { l -> if (state.habitLogs.none { it.id == l.id }) state.habitLogs.add(l) }
+        HabitReminders.sync(appCtx, h)
+        save()
+    }
+
+    fun habitSetTick(habitId: String, date: String, done: Boolean) {
+        if (habitById(habitId) == null) return
+        val l = habitLogFor(habitId, date)
+        l.done = done
+        l.at = System.currentTimeMillis()
+        save()
+    }
+
+    fun habitAddCount(habitId: String, date: String, delta: Int) {
+        val h = habitById(habitId) ?: return
+        val l = habitLogFor(habitId, date)
+        l.count = (l.count + delta).coerceAtLeast(0)
+        l.done = HabitLogic.resolveDone(h, l)
+        l.at = System.currentTimeMillis()
+        save()
+    }
+
+    fun habitToggleChecklist(habitId: String, date: String, itemId: String) {
+        val h = habitById(habitId) ?: return
+        val l = habitLogFor(habitId, date)
+        if (itemId in l.doneItems) l.doneItems.remove(itemId) else l.doneItems.add(itemId)
+        l.done = HabitLogic.resolveDone(h, l)
+        l.at = System.currentTimeMillis()
+        save()
+    }
+
+    fun habitScore(): Double = HabitLogic.score(state.habits, state.habitLogs, Dates.today())
+
+    fun habitDueCount(date: String): Int =
+        state.habits.count { !it.archived && HabitLogic.isDueOn(it, date) }
+
+    /* ---------- v5: star + skip ---------- */
+
+    fun toggleStar(id: String) {
+        val t = byId(id) ?: return
+        t.starred = !t.starred
+        save()
+    }
+
+    /** Skip: move the due date one day out WITHOUT completing (no
+     *  completion record, no Karma). A daily-recurring task's instance
+     *  moves +1 day from its current due date; anything else goes to
+     *  tomorrow. (SHADOW-THREE-DESIGN §2.) */
+    fun skipTask(id: String) {
+        val t = byId(id) ?: return
+        t.dueDate = if (t.recurrence == "daily" && t.dueDate != null)
+            Dates.addDays(t.dueDate!!, 1)
+        else
+            Dates.addDays(Dates.today(), 1)
+        Reminders.sync(appCtx, t)
+        logActivity("skip", "Skipped \"" + t.title + "\"", t.projectId)
+        save()
+    }
+
+    /* ---------- v5: countdowns ---------- */
+
+    fun addCountdown(c: CountdownItem) {
+        state.countdowns.add(c)
+        logActivity("countdown", "Counting down to \"" + c.title + "\"")
+        save()
+    }
+
+    fun deleteCountdown(id: String): CountdownItem? {
+        val c = state.countdowns.find { it.id == id } ?: return null
+        state.countdowns.remove(c)
+        logActivity("countdown", "Removed countdown \"" + c.title + "\"")
+        save()
+        return c
+    }
+
+    fun restoreCountdown(c: CountdownItem) {
+        if (state.countdowns.none { it.id == c.id }) state.countdowns.add(c)
+        save()
+    }
+
+    /* ---------- v5: checklist templates ---------- */
+
+    fun addChecklistTemplate(name: String, items: List<String>): ChecklistTemplate {
+        val t = ChecklistTemplate(uid(), name, items)
+        state.checklistTemplates.add(t)
+        save()
+        return t
+    }
+
+    fun deleteChecklistTemplate(id: String) {
+        state.checklistTemplates.removeAll { it.id == id }
+        save()
+    }
+
+    /** Applying a checklist template creates ONE task titled with the
+     *  template name, its subtasks = the template items, no due date. */
+    fun applyChecklistTemplate(id: String, projectId: String?): TaskItem? {
+        val tpl = state.checklistTemplates.find { it.id == id } ?: return null
+        val t = TaskItem(id = uid(), title = tpl.name, projectId = projectId, priority = 4)
+        tpl.items.forEach { t.subtasks.add(Subtask(uid(), it, false)) }
+        state.tasks.add(t)
+        logActivity("create", "Added \"" + t.title + "\" from a checklist", projectId)
+        save()
+        return t
+    }
+
+    /* ---------- v5: modular dock ---------- */
+
+    val DOCK_MODULE_IDS =
+        listOf("today", "upcoming", "calendar", "habits", "focus", "stats", "matrix", "countdowns", "browse")
+    // SHADOW-FOUR §2.7 default set: Today · Calendar · [+] · Browse ·
+    // Stats ("add" is the fixed centre, not a module). An earlier build
+    // shipped habits/focus here and dropped Stats — corrected at the
+    // Senior Designer gate (CHECK1 §9, deviation #8's coupled P3).
+    val DOCK_DEFAULT = listOf("today", "calendar", "browse", "stats")
+
+    /** Resolved dock modules: stored list filtered to known ids, or the
+     *  default set when empty; "today" is locked (always present);
+     *  at most 5 modules. The Quick Add "+" is NOT a module. */
+    fun dockModules(): List<String> {
+        val raw = state.dockModules.filter { it in DOCK_MODULE_IDS }.distinct()
+        var base = if (raw.isEmpty()) DOCK_DEFAULT else raw
+        if ("today" !in base) base = listOf("today") + base
+        return base.take(5)
+    }
+
+    fun setDockModules(mods: List<String>) {
+        state.dockModules = mods.filter { it in DOCK_MODULE_IDS }.distinct().take(5).toMutableList()
+        save()
     }
 }

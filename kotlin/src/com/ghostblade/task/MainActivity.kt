@@ -303,6 +303,7 @@ class MainActivity : Activity() {
         window.statusBarColor = 0xFF06060A.toInt()
         window.navigationBarColor = 0xFF06060A.toInt()
         Reminders.syncAll(this)
+        try { HabitReminders.syncAll(this) } catch (e: Exception) { /* habits re-sync on next open */ }
         LocationReceiver.rearmAll(this)
         buildRoot()
         render()
@@ -338,7 +339,7 @@ class MainActivity : Activity() {
         // Todoist list screens are a flat #212121 (ANALYSIS §0.1) — no aurora
         // wallpaper behind them in the replicated default look.
         val bgView = View(this)
-        bgView.setBackgroundColor(TD_BG)
+        bgView.setBackgroundColor(if (Glass.isV5(this)) V5.BG else TD_BG)
         wallpaperHolder.addView(bgView, FrameLayout.LayoutParams(-1, -1))
         root.addView(wallpaperHolder, FrameLayout.LayoutParams(-1, -1))
 
@@ -354,13 +355,21 @@ class MainActivity : Activity() {
         header.orientation = LinearLayout.HORIZONTAL
         header.gravity = Gravity.CENTER_VERTICAL
         headerCard = header
-        header.setPadding(dp(16f), dp(12f), dp(8f), dp(8f))
+        // v5 (§2.1b): the header aligns with the 20dp screen padding.
+        if (Glass.isV5(this)) header.setPadding(dp(20f), dp(12f), dp(20f), dp(8f))
+        else header.setPadding(dp(16f), dp(12f), dp(8f), dp(8f))
         val hp = FrameLayout.LayoutParams(-1, -2)
         header.layoutParams = hp
         val titleCol = LinearLayout(this)
         titleCol.orientation = LinearLayout.VERTICAL
         titleCol.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         headerTitle = tv("Today", 27f, Glass.text(this@MainActivity), false)
+        if (Glass.isV5(this)) {
+            // v5 screen titles are T_TITLE: 24sp bold (SHADOW-FOUR
+            // §1.6 / §2.1b) — not the Todoist skin's 27sp regular.
+            headerTitle.setTextSize(24f)
+            headerTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }
         headerSub = tv("", 14f, Glass.muted(this@MainActivity))
         headerSub.layoutParams = lp(t = dp(2f))
         val progWrap = FrameLayout(this)
@@ -398,7 +407,10 @@ class MainActivity : Activity() {
         scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(dp(8f), dp(6f), dp(8f), dp(120f))
+        // v5: 20dp screen padding and ONE bottom inset (106dp) so no
+        // content ever hides under the floating dock (SHADOW-FOUR §1.4).
+        if (Glass.isV5(this)) content.setPadding(dp(20f), dp(6f), dp(20f), dp(V5.CONTENT_BOTTOM_INSET.toFloat()))
+        else content.setPadding(dp(8f), dp(6f), dp(8f), dp(120f))
         scroll.addView(content)
         column.addView(scroll)
 
@@ -412,6 +424,7 @@ class MainActivity : Activity() {
         np.gravity = Gravity.BOTTOM
         navBar.layoutParams = np
         root.addView(navBar)
+        styleNavBar()
 
         // FAB — rounded square, flat #D04349 (ANALYSIS §0.2: ~52x50dp,
         // corner radius ~14dp), floating just above the nav bar.
@@ -426,6 +439,9 @@ class MainActivity : Activity() {
         fab.contentDescription = "Add task"
         Glass.elevate(this, fab, 14f, 8f)
         fabBtn = fab
+        // v5 has NO floating FAB (Jervis ruling): Quick Add is the ghost
+        // pill on Today + the dock's fixed centre "+".
+        if (Glass.isV5(this)) fab.visibility = View.GONE
         root.addView(fab)
 
         // undo bar
@@ -466,7 +482,24 @@ class MainActivity : Activity() {
         when {
             s != null -> renderSub(s)
             view == "today" -> renderToday()
-            view == "inbox" -> renderTaskList(Store.sortTasks(Store.state.tasks.filter { it.projectId == null }), "📥", "Inbox is empty.")
+            view == "inbox" -> {
+                val inboxTasks = Store.sortTasks(Store.state.tasks.filter { it.projectId == null })
+                if (isV5()) {
+                    // §3.2: Inbox is a capture surface — it earns the
+                    // ghost pill, and its empty state is the §2.11 one.
+                    val ghost = v5GhostPill()
+                    ghost.layoutParams = lp(h = dp(52f), t = dp(8f), b = dp(16f))
+                    content.addView(ghost)
+                    if (inboxTasks.isEmpty()) {
+                        content.addView(v5EmptyState("▤", "Inbox zero", "Quick Add drops everything here first."))
+                        if (dispShowFor(displayKey())) completedGroup(null)
+                    } else {
+                        renderTaskList(inboxTasks, "📥", "Inbox is empty.")
+                    }
+                } else {
+                    renderTaskList(inboxTasks, "📥", "Inbox is empty.")
+                }
+            }
             view == "upcoming" -> renderUpcoming()
             view == "browse" -> renderBrowse()
         }
@@ -476,7 +509,10 @@ class MainActivity : Activity() {
         // same-screen state refresh.
         val order = listOf("inbox", "today", "upcoming", "browse")
         if (order.contains(view) && s == null) lastTab = view
-        headerHolder.visibility = if (s == null && view == "browse") View.GONE else View.VISIBLE
+        // Browse has no header (profile header instead); v5 Today has
+        // none either — the greeting lives inside the screen (§3.1).
+        headerHolder.visibility = if ((s == null && view == "browse") ||
+            (isV5() && s == null && view == "today")) View.GONE else View.VISIBLE
         val renderKey = s ?: view
         if (renderKey != lastRenderKey) {
             lastRenderKey = renderKey
@@ -517,6 +553,21 @@ class MainActivity : Activity() {
         overBtn.contentDescription = "More options"
         overBtn.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
         overBtn.setOnClickListener { showOverflowMenu(it) }
+        if (isV5()) {
+            // §2.1b: the two actions live in ONE grouped icon pill
+            // (POPUP fill + HAIRLINE), the same container the Today
+            // greeting header uses — never two bare buttons.
+            val pill = LinearLayout(this)
+            pill.orientation = LinearLayout.HORIZONTAL
+            pill.gravity = Gravity.CENTER
+            pill.background = roundedRect(V5.POPUP, 999f, V5.HAIRLINE)
+            pill.layoutParams = LinearLayout.LayoutParams(-2, dp(40f))
+            dispBtn.setTextColor(V5.TEXT); dispBtn.textSize = 19f
+            overBtn.setTextColor(V5.TEXT); overBtn.textSize = 19f
+            pill.addView(dispBtn); pill.addView(overBtn)
+            headerActions.addView(pill)
+            return
+        }
         headerActions.addView(dispBtn); headerActions.addView(overBtn)
     }
 
@@ -563,17 +614,22 @@ class MainActivity : Activity() {
         if (s.startsWith("filter:")) return "Filter · " + (Store.state.filters.find { it.id == s.substring(7) }?.name ?: "")
         if (s.startsWith("project:")) return "# " + (Store.state.projects.find { it.id == s.substring(8) }?.name ?: "")
         if (s.startsWith("label:")) return "@ " + (Store.state.labels.find { it.id == s.substring(6) }?.name ?: "")
+        if (s.startsWith("habit:")) return Store.habitById(s.substring(6))?.name ?: "Habit"
+        if (s == "habitform") return if (habitFormId != null) "Edit habit" else "New habit"
         return mapOf(
             "calendar" to "Calendar", "ramble" to "Ramble", "assist" to "Task & Email Assist",
             "history" to "History", "insights" to "Project Insights", "backups" to "Backups & Sync", "filterslabels" to "Filters & Labels",
             "stats" to "Productivity", "search" to "Search", "focus" to "Focus Timer",
-            "smartplan" to "Smart Plan", "performance" to "Performance"
+            "smartplan" to "Smart Plan", "performance" to "Performance",
+            "habits" to "Habits", "matrix" to "Eisenhower Matrix", "matrixlist" to "Eisenhower Matrix",
+            "countdowns" to "Countdowns", "dock" to "Dock", "starred" to "Starred"
         )[s] ?: "GhostBlade Task"
     }
 
     private fun renderNav() {
         navBar.removeAllViews()
         if (selectMode) { renderSelectBar(); return }
+        if (isV5()) { renderDock(); return }
         // Today's glyph embeds the current day number (ANALYSIS §0.4).
         val todayNum = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH).toString()
         val items = listOf(
@@ -796,7 +852,7 @@ class MainActivity : Activity() {
 
     private fun hairline(): View {
         val v = View(this)
-        v.setBackgroundColor(0xFF1F1F1F.toInt())
+        v.setBackgroundColor(if (isV5()) V5.HAIRLINE else 0xFF1F1F1F.toInt())
         v.layoutParams = LinearLayout.LayoutParams(-1, Math.max(1, dp(0.5f)))
         return v
     }
@@ -991,9 +1047,16 @@ class MainActivity : Activity() {
      *  group's outer corners only, hairline separators between rows,
      *  no per-row margins (ANALYSIS §1 — the core structural pattern). */
     private fun groupedCard(tasks: List<TaskItem>, showProject: Boolean, iconOnlyFor: (TaskItem) -> Boolean): LinearLayout {
+        if (isV5()) {
+            // v5 lists are separate opaque cards with gaps, never a
+            // grouped container (SHADOW-FOUR §2.6). Drag-sort is wired
+            // for project lists; Today wires its own (renderTodayV5).
+            val drag = sub?.startsWith("project:") == true
+            return v5CardList(tasks, showProject, swipe = true, drag = drag)
+        }
         val g = LinearLayout(this)
         g.orientation = LinearLayout.VERTICAL
-        g.background = roundedRect(TD_CARD, 14f)
+        g.background = roundedRect(cardFill(), 14f)
         g.layoutParams = lp(b = dp(10f))
         tasks.forEachIndexed { i, t ->
             if (i > 0) {
@@ -1009,9 +1072,17 @@ class MainActivity : Activity() {
     /** Standalone row for the remaining single-row callers (Search results,
      *  Calendar day list): the same anatomy in its own one-row group. */
     private fun taskRow(t: TaskItem): LinearLayout {
+        if (isV5()) {
+            val wrap = LinearLayout(this)
+            wrap.orientation = LinearLayout.VERTICAL
+            val c = v5TaskCard(t, showProject = false, swipe = sub == "search")
+            c.layoutParams = lp(b = dp(10f))
+            wrap.addView(c)
+            return wrap
+        }
         val wrap = LinearLayout(this)
         wrap.orientation = LinearLayout.VERTICAL
-        wrap.background = roundedRect(TD_CARD, 14f)
+        wrap.background = roundedRect(cardFill(), 14f)
         wrap.layoutParams = lp(b = dp(10f))
         wrap.addView(taskRowInner(t, showProject = false, iconOnly = false))
         return wrap
@@ -1041,17 +1112,24 @@ class MainActivity : Activity() {
         check.background = checkDrawable(t.priority, true)
         check.text = "✓"
         Sfx.complete()
+        vibrateOnce()
+        handler.postDelayed({
+            val msg = Store.completeTask(t.id)
+            if (msg.isNotEmpty()) toast(msg)
+            render()
+        }, 260)
+    }
+
+    /** One short haptic tick (the completion/drag feedback used in
+     *  several places — a single helper keeps the deprecated
+     *  VIBRATOR_SERVICE lookup in exactly one spot). */
+    private fun vibrateOnce() {
         if (Build.VERSION.SDK_INT >= 26) {
             try {
                 val vib = getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator
                 vib?.vibrate(android.os.VibrationEffect.createOneShot(15, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
             } catch (e: Exception) {}
         }
-        handler.postDelayed({
-            val msg = Store.completeTask(t.id)
-            if (msg.isNotEmpty()) toast(msg)
-            render()
-        }, 260)
     }
 
     /* ---------------- display pipeline (DisplayEngine wiring) -------- */
@@ -1109,9 +1187,55 @@ class MainActivity : Activity() {
     private fun completedGroup(dateFilter: String?) {
         val comps = Store.state.completions.filter { dateFilter == null || it.date == dateFilter }.take(20)
         if (comps.isEmpty()) return
+        if (isV5()) {
+            // §2.6 applies to completed tasks too: separate opaque
+            // cards, DONE-green left bar, DONE-green filled check —
+            // never the legacy grouped container (CHECK1 P2-3).
+            val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.layoutParams = lp(t = dp(20f), b = dp(8f))
+            val ht = tv("Completed", 20f, V5.TEXT, true)
+            ht.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            head.addView(ht)
+            head.addView(tv(comps.size.toString(), 14f, V5.FAINT))
+            content.addView(head)
+            val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+            col.layoutParams = lp(b = dp(4f))
+            comps.forEach { c ->
+                val cardL = LinearLayout(this); cardL.orientation = LinearLayout.HORIZONTAL
+                cardL.background = v5CardBg()
+                cardL.setPadding(dp(16f), dp(14f), dp(14f), dp(14f))
+                cardL.gravity = Gravity.TOP
+                cardL.layoutParams = lp(b = dp(V5.CARD_GAP.toFloat()))
+                val bar = View(this)
+                bar.background = roundedRect(V5.DONE, 2f)
+                bar.layoutParams = LinearLayout.LayoutParams(dp(4f), -1).apply { rightMargin = dp(12f) }
+                cardL.addView(bar)
+                val ck = tv("✓", 12f, 0xFFFFFFFF.toInt(), true); ck.gravity = Gravity.CENTER
+                ck.background = ovalDrawable(V5.DONE)
+                ck.layoutParams = LinearLayout.LayoutParams(dp(24f), dp(24f))
+                cardL.addView(ck)
+                val body = LinearLayout(this); body.orientation = LinearLayout.VERTICAL
+                body.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+                val tt = tv(c.title, 16f, V5.MUTED, true)
+                tt.paintFlags = tt.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+                tt.maxLines = 2
+                tt.ellipsize = android.text.TextUtils.TruncateAt.END
+                body.addView(tt)
+                if (dateFilter == null) {
+                    val dt = tv(fmtMonDay(c.date), 12f, V5.FAINT)
+                    dt.layoutParams = lp(t = dp(3f))
+                    body.addView(dt)
+                }
+                cardL.addView(body)
+                col.addView(cardL)
+            }
+            content.addView(col)
+            return
+        }
         content.addView(sectionHeader("Completed"))
         val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
-        g.background = roundedRect(TD_CARD, 14f); g.layoutParams = lp(b = dp(10f))
+        g.background = roundedRect(cardFill(), 14f); g.layoutParams = lp(b = dp(10f))
         comps.forEachIndexed { i, c ->
             if (i > 0) {
                 val h = hairline()
@@ -1280,6 +1404,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderToday() {
+        if (isV5()) { renderTodayV5(); return }
         addOverdueSection()
         val key = displayKey()
         val todayList = applyDisplay(Store.state.tasks.filter { it.dueDate == Dates.today() }, key)
@@ -1369,6 +1494,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderUpcoming() {
+        if (isV5()) { renderUpcomingV5(); return }
         val today = Dates.today()
         // Month selector — the title turns RED while the strip is expanded
         // and its chevron flips (COMPARE K4).
@@ -1440,6 +1566,90 @@ class MainActivity : Activity() {
         if (dispShowFor(key)) completedGroup(today)
     }
 
+    /** Upcoming, v5 (§3.3): the shared week day-pills on top (same
+     *  selection state as Today, §2.3), the Overdue group pinned first
+     *  with its label in OVERDUE, then day groups in date order from
+     *  the selected day onward. Selecting a pill scrolls the list to
+     *  that day's group. Replaces the v4 month selector + week strip
+     *  under v5 (CHECK1 P2-5); the legacy path above is untouched for
+     *  the rollback skins. */
+    private fun renderUpcomingV5() {
+        val today = Dates.today()
+        val key = displayKey()
+        if (v5DaySel < today) v5DaySel = today
+        val pills = v5DayPills(v5DaySel) { d ->
+            upcomingScrollDay = d
+            v5DaySel = d
+            render()
+        }
+        pills.layoutParams = lp(t = dp(4f), b = dp(6f))
+        content.addView(pills)
+
+        val overdue = applyDisplay(Store.state.tasks.filter { Dates.isOverdue(it) }, key)
+        if (overdue.isNotEmpty()) {
+            val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.layoutParams = lp(t = dp(10f), b = dp(8f))
+            val title = tv("Overdue", 12f, V5.OVERDUE, true)
+            title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            head.addView(title)
+            val resched = tv("Reschedule", 13f, V5.OVERDUE)
+            resched.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+            resched.contentDescription = "Reschedule all overdue tasks to today"
+            resched.setOnClickListener {
+                val prev = Store.rescheduleOverdue()
+                if (prev.isNotEmpty()) {
+                    lastReschedule = prev
+                    toast("Rescheduled ${prev.size} task(s) to today")
+                    showRescheduleUndo(prev)
+                    render()
+                }
+            }
+            head.addView(resched)
+            val chev = tv(if (todayOverdueCollapsed) "⌄" else "∧", 18f, V5.TEXT)
+            chev.setPadding(dp(12f), dp(4f), dp(2f), dp(4f))
+            chev.contentDescription = "Collapse Overdue section"
+            chev.setOnClickListener { todayOverdueCollapsed = !todayOverdueCollapsed; render() }
+            head.addView(chev)
+            content.addView(head)
+            if (!todayOverdueCollapsed)
+                content.addView(v5CardList(overdue, showProject = true, swipe = true, drag = false))
+        }
+
+        val dated = Store.state.tasks.filter { it.dueDate != null && it.dueDate!! >= v5DaySel }
+            .groupBy { it.dueDate!! }.toSortedMap()
+        if (dated.isEmpty() && overdue.isEmpty()) {
+            content.addView(v5EmptyState("▦", "Nothing coming up", "Future tasks will line up here."))
+            return
+        }
+        var scrollTarget: View? = null
+        dated.forEach { (ds, tasks) ->
+            val suffix = when (ds) {
+                today -> " • Today"
+                Dates.addDays(today, 1) -> " • Tomorrow"
+                else -> ""
+            }
+            val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.layoutParams = lp(t = dp(18f), b = dp(8f))
+            val ht = tv(fmtDayLong(ds) + suffix, 16f, V5.TEXT, true)
+            ht.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            head.addView(ht)
+            head.addView(tv(tasks.size.toString(), 13f, V5.FAINT))
+            content.addView(head)
+            if (ds == upcomingScrollDay) scrollTarget = head
+            val sorted = applyDisplay(tasks, key)
+            if (sorted.isNotEmpty())
+                content.addView(v5CardList(sorted, showProject = true, swipe = true, drag = false))
+        }
+        val target = scrollTarget
+        if (target != null) {
+            upcomingScrollDay = null
+            content.post { mainScroll.smoothScrollTo(0, (target.top - dp(6f)).coerceAtLeast(0)) }
+        }
+        if (dispShowFor(key)) completedGroup(today)
+    }
+
     /* ---------------- browse ---------------- */
 
     private fun menuItem(icon: String, title: String, smallTxt: String?, tag: String?, click: () -> Unit): LinearLayout {
@@ -1468,7 +1678,7 @@ class MainActivity : Activity() {
      *  groups are single cards, not separate rows (ANALYSIS §6). */
     private fun groupedMenuCard(rows: List<View>): LinearLayout {
         val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
-        g.background = roundedRect(TD_CARD, 14f)
+        g.background = roundedRect(cardFill(), 14f)
         g.layoutParams = lp(b = dp(10f))
         rows.forEachIndexed { i, r ->
             if (i > 0) {
@@ -1486,7 +1696,16 @@ class MainActivity : Activity() {
         row.gravity = Gravity.CENTER_VERTICAL
         row.setPadding(dp(20f), dp(16f), dp(20f), dp(16f))
         val ic = tv(icon, 20f, iconColor)
-        ic.layoutParams = LinearLayout.LayoutParams(dp(40f), -2)
+        if (isV5()) {
+            // §2.9: the glyph sits in a 32dp rounded-square well tinted
+            // with its own semantic colour (~15%), glyph solid.
+            ic.gravity = Gravity.CENTER
+            ic.textSize = 16f
+            ic.background = roundedRect(V5.tint(iconColor, 38), V5.R_ICONSQ)
+            ic.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f)).apply { rightMargin = dp(12f) }
+        } else {
+            ic.layoutParams = LinearLayout.LayoutParams(dp(40f), -2)
+        }
         row.addView(ic)
         val tt = tv(title, 16f)
         tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
@@ -1498,6 +1717,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderBrowse() {
+        if (isV5()) { renderBrowseV5(); return }
         // Profile header (ANALYSIS §6): avatar with a karma progress arc,
         // name at 20sp bold, bell + gear at the right. No "Browse" title.
         val prof = LinearLayout(this); prof.orientation = LinearLayout.HORIZONTAL
@@ -1558,6 +1778,7 @@ class MainActivity : Activity() {
 
         // Primary group — red outline icons.
         content.addView(groupedMenuCard(listOf(
+            browseRow("⭐", 0xFFFFD60A.toInt(), "Starred", Store.state.tasks.count { it.starred }.toString()) { sub = "starred"; render() },
             browseRow("⌕", TD_RED, "Search", null) { sub = "search"; render() },
             browseRow("▦", TD_RED, "Filters & Labels", null) { sub = "filterslabels"; render() },
             browseRow("◉", TD_RED, "Reporting", null) { sub = "history"; render() }
@@ -1620,7 +1841,7 @@ class MainActivity : Activity() {
         }))
         content.addView(appearanceCard())
         val about = LinearLayout(this); about.orientation = LinearLayout.VERTICAL
-        about.background = roundedRect(TD_CARD, 14f)
+        about.background = roundedRect(cardFill(), 14f)
         about.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
         about.layoutParams = lp(b = dp(10f))
         about.addView(tv("GhostBlade Task", 16f, Glass.text(this@MainActivity), true))
@@ -1706,6 +1927,38 @@ class MainActivity : Activity() {
             save.layoutParams = lp(t = dp(8f))
             col.addView(save)
         }
+        // Checklist templates (v5, SHADOW-THREE-DESIGN §8.3): applying
+        // one creates a single task whose subtasks are the items.
+        col.addView(dayGroup("CHECKLISTS"))
+        if (Store.state.checklistTemplates.isEmpty()) {
+            col.addView(tv("No checklist templates yet — save one from a task's subtasks in its editor.", 13f, Glass.muted(this@MainActivity)))
+        }
+        Store.state.checklistTemplates.forEach { tpl ->
+            val block = LinearLayout(this); block.orientation = LinearLayout.VERTICAL
+            block.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
+            val headR = LinearLayout(this); headR.orientation = LinearLayout.HORIZONTAL
+            headR.gravity = Gravity.CENTER_VERTICAL
+            val nm = tv(tpl.name, 15f, Glass.text(this@MainActivity), true)
+            nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            headR.addView(nm)
+            val del = tv("✕", 14f, Glass.muted(this@MainActivity))
+            del.contentDescription = "Delete checklist template"
+            del.setOnClickListener { Store.deleteChecklistTemplate(tpl.id); showSheet(buildTemplatesSheet()) }
+            headR.addView(del)
+            block.addView(headR)
+            val prev = tv(
+                tpl.items.take(3).joinToString(" · ") + "\n" + tpl.items.size + " items total",
+                13f, Glass.muted(this@MainActivity))
+            prev.layoutParams = lp(t = dp(2f))
+            block.addView(prev)
+            val apply = ghostBtn("＋ Use this checklist") {
+                Store.applyChecklistTemplate(tpl.id, null)
+                Sfx.add(); closeSheet(); toast("Checklist added to Inbox"); render()
+            }
+            apply.layoutParams = lp(t = dp(6f))
+            block.addView(apply)
+            col.addView(block)
+        }
         return col
     }
 
@@ -1726,13 +1979,13 @@ class MainActivity : Activity() {
         c.addView(tv("🪟 Appearance", 16f, Glass.text(this@MainActivity), true))
         c.addView(label("Theme"))
         val tRow = LinearLayout(this); tRow.orientation = LinearLayout.HORIZONTAL
-        listOf("todoist" to "✓ Todoist", "aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
+        listOf("v5" to "✦ V5", "todoist" to "✓ Todoist", "aurora" to "🌌 Aurora", "black" to "⬛ Black", "white" to "⬜ White").forEach { (v, l) ->
             val ch = chipBtn(l, Prefs.theme(this) == v) { Prefs.set(this, "theme", v); applyTheme() }
             ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
             tRow.addView(ch)
         }
         c.addView(tRow)
-        val tNote = tv("Todoist = flat dark (the default) · Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 13f, Glass.muted(this@MainActivity))
+        val tNote = tv("V5 = the new flat dark (default) · Todoist = flat dark · Black = Apple Music dark · White = frosted light · Aurora = colour wallpapers below", 13f, Glass.muted(this@MainActivity))
         tNote.layoutParams = lp(t = dp(4f), b = dp(2f))
         c.addView(tNote)
         c.addView(label("Glass style"))
@@ -1856,7 +2109,7 @@ class MainActivity : Activity() {
     private fun applyTheme() {
         refreshWallpaper()
         headerCard.background = null
-        navBar.setBackgroundColor(TD_NAV)
+        styleNavBar()
         undoBar.background = Glass.panel(this, 22f, strong = true)
         applyStatusBar()
         render()
@@ -1922,13 +2175,39 @@ class MainActivity : Activity() {
                 boardMode = dispLayoutFor(s) == "board"
                 val p = Store.state.projects.find { it.id == s.substring(8) }
                 if (p == null) { content.addView(emptyView("📁", "Project not found.")); return }
-                val toggle = LinearLayout(this); toggle.orientation = LinearLayout.HORIZONTAL
-                toggle.layoutParams = lp(b = dp(10f))
-                val lBtn = chipBtn("☰ List", !boardMode) { boardMode = false; render() }
-                val bBtn = chipBtn("▦ Board", boardMode) { boardMode = true; render() }
-                lBtn.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
-                toggle.addView(lBtn); toggle.addView(bBtn)
-                content.addView(toggle)
+                if (isV5()) {
+                    // §3.5.1/§3.5.2 under v5: a project meta row (12dp
+                    // colour dot + open count — the name itself lives
+                    // in the §2.1b global header) and the List|Board
+                    // switch as the §2.10 segmented control, not
+                    // chipBtn pills.
+                    val prow = LinearLayout(this); prow.orientation = LinearLayout.HORIZONTAL
+                    prow.gravity = Gravity.CENTER_VERTICAL
+                    prow.layoutParams = lp(b = dp(10f))
+                    val dot = View(this)
+                    dot.background = ovalDrawable(try {
+                        android.graphics.Color.parseColor(p.color)
+                    } catch (e: Exception) { V5.FAINT })
+                    dot.layoutParams = LinearLayout.LayoutParams(dp(12f), dp(12f)).apply { rightMargin = dp(8f) }
+                    prow.addView(dot)
+                    val openN = Store.state.tasks.count { it.projectId == p.id }
+                    prow.addView(tv(openN.toString() + if (openN == 1) " open task" else " open tasks", 13f, V5.FAINT))
+                    content.addView(prow)
+                    val seg = v5Segmented(listOf("list" to "List", "board" to "Board"),
+                        if (boardMode) "board" else "list") { mode ->
+                        boardMode = mode == "board"; Sfx.tick(); render()
+                    }
+                    seg.layoutParams = LinearLayout.LayoutParams(-1, dp(36f)).apply { bottomMargin = dp(12f) }
+                    content.addView(seg)
+                } else {
+                    val toggle = LinearLayout(this); toggle.orientation = LinearLayout.HORIZONTAL
+                    toggle.layoutParams = lp(b = dp(10f))
+                    val lBtn = chipBtn("☰ List", !boardMode) { boardMode = false; render() }
+                    val bBtn = chipBtn("▦ Board", boardMode) { boardMode = true; render() }
+                    lBtn.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+                    toggle.addView(lBtn); toggle.addView(bBtn)
+                    content.addView(toggle)
+                }
                 if (boardMode) renderBoard(p)
                 else {
                     val projTasks = Store.state.tasks.filter { it.projectId == p.id }
@@ -1975,6 +2254,18 @@ class MainActivity : Activity() {
                 }
                 content.addView(del)
             }
+            s.startsWith("habit:") -> renderHabitDetail(s.substring(6))
+            s == "habits" -> renderHabits()
+            s == "habitform" -> renderHabitForm()
+            s == "matrix" -> renderMatrix()
+            s == "matrixlist" -> renderTaskList(
+                Store.sortTasks(Store.state.tasks.filter { quadrantOf(it) == matrixQuadSel }),
+                "⊞", "Nothing in this quadrant.")
+            s == "countdowns" -> renderCountdowns()
+            s == "dock" -> renderDockSettings()
+            s == "starred" -> renderTaskList(
+                Store.sortTasks(Store.state.tasks.filter { it.starred }),
+                "⭐", "No starred tasks yet — star one from its editor or with a left-swipe.")
             s == "filterslabels" -> renderFiltersLabels()
             s == "search" -> renderSearch()
             s == "calendar" -> renderCalendar()
@@ -2000,6 +2291,58 @@ class MainActivity : Activity() {
     private var searchQuery = ""
     private var rambleText = ""
     private var assistText = ""
+
+    /* ----- v5 state (SHADOW-THREE / SHADOW-FOUR designs) ----- */
+    private var v5DaySel: String = Dates.today()
+    /** One-shot scroll target for Upcoming (§3.3): set by a day-pill
+     *  tap, consumed by the next renderUpcomingV5 pass. */
+    private var upcomingScrollDay: String? = null
+    /** Productivity range for the v5 Stats screen (§3.7):
+     *  week | month | year | all. */
+    private var statsRange = "week"
+    /** Countdown sheet's chosen date (the date-sheet picker writes
+     *  here; the sheet's Save reads it). */
+    private var cdDate: String = Dates.today()
+    private var habitDaySel: String = Dates.today()
+    private var habitFilterDue = false
+    private var habitLibQuery = ""
+    private var adoptTpl: HabitTemplate? = null
+    private val adoptDays = mutableSetOf<Int>()
+    private val adoptTimes = mutableListOf<String>()
+    private var adoptPhraseIn: EditText? = null
+    private var habitFormId: String? = null
+    private var hfName = ""
+    private var hfDesc = ""
+    private var hfColor = "#d9a441"
+    private var hfIcon = "circle"
+    private var hfKind = "build"
+    private var hfFreqType = "daily"
+    private val hfDays = mutableSetOf<Int>()
+    private val hfMonthDays = mutableSetOf<Int>()
+    private var hfFreqCount = 3
+    private var hfFreqPeriod = 7
+    private var hfTracking = "tick"
+    private var hfTarget = 1
+    private var hfUnit = ""
+    private val hfChecklist = mutableListOf<String>()
+    private var hfPhrase = ""
+    private val hfTimes = mutableListOf<String>()
+    private var hfExpandedHabit: String? = null
+    private var matrixQuadSel = 0
+    private var statsYearSel: Int = Dates.parse(Dates.today()).get(java.util.Calendar.YEAR)
+    private var statsWeekStartSel: String = Stats.weekStart(Dates.today())
+    private var heatCaption = ""
+    private val qaSubtasks = mutableListOf<String>()
+    private var qaShowSubtasks = false
+    private var qaHintIdx = 0
+    private var qaHintRun: Runnable? = null
+    private var taskDateEditId: String? = null
+    private var cdColor = "#d9a441"
+    private val qaHints = listOf(
+        "Yoga class at 6 tonight", "Call Mom tonight at 8",
+        "Dentist appointment next Tuesday", "Write script tomorrow 9am #Must",
+        "What's today's plan?"
+    )
 
     private fun renderSearch() {
         val inputE = input("Search tasks & notes…", searchQuery)
@@ -2150,17 +2493,19 @@ class MainActivity : Activity() {
         sheetIsQa = false
         sheetRoot.removeAllViews()
         val scrim = View(this)
-        scrim.setBackgroundColor(TD_BG)
+        // v5: the full-height sheet (Display) sits on V5.BG — TD_BG is
+        // the Todoist skin's colour and off-palette under v5.
+        scrim.setBackgroundColor(if (isV5()) V5.BG else TD_BG)
         sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         val panel = LinearLayout(this)
         panel.orientation = LinearLayout.VERTICAL
-        panel.setBackgroundColor(TD_BG)
+        panel.setBackgroundColor(if (isV5()) V5.BG else TD_BG)
         panel.setPadding(dp(20f), dp(10f), dp(20f), dp(16f))
         panel.layoutParams = FrameLayout.LayoutParams(-1, -1)
         val handle = View(this)
         val hg = android.graphics.drawable.GradientDrawable()
         hg.cornerRadius = dp(2f).toFloat()
-        hg.setColor(0xFF595959.toInt())
+        hg.setColor(if (isV5()) V5.HANDLE else 0xFF595959.toInt())
         handle.background = hg
         handle.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(4f)).apply {
             gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(12f)
@@ -2214,7 +2559,9 @@ class MainActivity : Activity() {
         val track = View(this)
         val td = android.graphics.drawable.GradientDrawable()
         td.cornerRadius = dp(16f).toFloat()
-        if (on) td.setColor(TD_RED) else {
+        // §3.8.2: under v5 a toggle's ON state is DONE green (the
+        // platform convention; green is outside the accent budget).
+        if (on) td.setColor(if (isV5()) V5.DONE else TD_RED) else {
             td.setColor(android.graphics.Color.TRANSPARENT)
             td.setStroke(dp(2f), TD_GREY)
         }
@@ -2234,7 +2581,7 @@ class MainActivity : Activity() {
     private fun displayRowCard(icon: String, labelText: String, value: String, click: () -> Unit): LinearLayout {
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.background = roundedRect(TD_CARD, 14f)
+        row.background = roundedRect(cardFill(), 14f)
         row.setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
         row.layoutParams = lp(b = dp(8f))
         val ic = tv(icon, 20f, Glass.text(this@MainActivity))
@@ -2275,7 +2622,7 @@ class MainActivity : Activity() {
         layLbl.layoutParams = lp(t = dp(24f), b = dp(10f))
         col.addView(layLbl)
         val layCard = LinearLayout(this); layCard.orientation = LinearLayout.HORIZONTAL
-        layCard.background = roundedRect(TD_CARD, 14f)
+        layCard.background = roundedRect(cardFill(), 14f)
         layCard.setPadding(dp(12f), dp(18f), dp(12f), dp(18f))
         val curLayout = dispLayoutFor(key)
         listOf("list" to "List", "board" to "Board", "calendar" to "Calendar").forEach { (v, lbl) ->
@@ -2312,7 +2659,7 @@ class MainActivity : Activity() {
         // Completed tasks toggle (persisted per view — B2).
         val compCard = LinearLayout(this); compCard.orientation = LinearLayout.HORIZONTAL
         compCard.gravity = Gravity.CENTER_VERTICAL
-        compCard.background = roundedRect(TD_CARD, 14f)
+        compCard.background = roundedRect(cardFill(), 14f)
         compCard.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
         compCard.layoutParams = lp(t = dp(10f))
         val compIcon = tv("✓", 14f, Glass.text(this@MainActivity), true)
@@ -2441,6 +2788,10 @@ class MainActivity : Activity() {
     /** Permanent gentle frost on the wallpaper layer, always on: every glass
      *  panel in the app sits over it, so the whole UI reads as frosted glass. */
     private fun applyWallpaperFrost() {
+        // v5 bans backdrop blur ANYWHERE (SHADOW-FOUR §0): under v5 the
+        // wallpaper layer is a flat colour and no RenderEffect is ever
+        // attached to it (Senior Designer gate, CHECK1 P1).
+        if (isV5()) return
         if (Build.VERSION.SDK_INT < 31) return
         try { wallpaperHolder.setRenderEffect(frostEffect(18f, 1.22f)) } catch (e: Exception) { /* visual only */ }
     }
@@ -2449,6 +2800,9 @@ class MainActivity : Activity() {
      *  depth + a saturation lift — the iOS recipe. Closing the sheet restores
      *  the permanent wallpaper frost. */
     private fun setBackdropBlur(on: Boolean) {
+        // v5: sheets open over the flat V5.SCRIM only — no blur, no
+        // saturation lift, on either the open or the close path.
+        if (isV5()) return
         if (Build.VERSION.SDK_INT < 31) return
         try {
             if (on) {
@@ -2487,23 +2841,29 @@ class MainActivity : Activity() {
         sheetIsQa = true
         sheetRoot.removeAllViews()
         val scrim = View(this)
-        scrim.setBackgroundColor(0xFF000000.toInt())
+        scrim.setBackgroundColor(if (isV5()) V5.SCRIM else 0xFF000000.toInt())
         scrim.alpha = 0f
         scrim.setOnClickListener { attemptCloseSheet() }
         sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         val panel = LinearLayout(this)
         panel.orientation = LinearLayout.VERTICAL
-        panel.background = Glass.todoistSheetBg(this, 20f, Todoist.SHEET)
+        // v5 (SHADOW-FOUR §2.8): the Quick Add card sits on V5.SHEET at
+        // R_SHEET 28 — not the Todoist #1F1F1F / radius-20 surface
+        // (Senior Designer gate, CHECK1 P2-1). The floating-card
+        // geometry (12dp margins, IME behaviour) is unchanged.
+        panel.background = if (isV5()) roundedRect(V5.SHEET, V5.R_SHEET)
+            else Glass.todoistSheetBg(this, 20f, Todoist.SHEET)
         panel.setPadding(dp(18f), dp(10f), dp(18f), dp(16f))
         val pp = FrameLayout.LayoutParams(-1, -2)
         pp.gravity = Gravity.BOTTOM
         pp.setMargins(dp(12f), 0, dp(12f), dp(12f))
         panel.layoutParams = pp
-        Glass.elevate(this, panel, 20f, 24f)
+        Glass.elevate(this, panel, if (isV5()) V5.R_SHEET else 20f, 24f)
         val handleWrap = LinearLayout(this)
         handleWrap.orientation = LinearLayout.VERTICAL
         handleWrap.gravity = Gravity.CENTER_HORIZONTAL
         val handle = Glass.dragHandle(this)
+        if (isV5()) handle.background = roundedRect(V5.HANDLE, 999f)
         handle.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(4f)).apply { bottomMargin = dp(12f) }
         handleWrap.addView(handle)
         panel.addView(handleWrap)
@@ -2518,7 +2878,9 @@ class MainActivity : Activity() {
         undoWasVisible = undoBar.visibility == View.VISIBLE
         if (undoWasVisible) undoBar.visibility = View.GONE
         Sfx.open()
-        scrim.animate().alpha(0.5f).setDuration(150).start()
+        // v5's SCRIM token carries its own alpha (160/255); legacy QA
+        // scrim is solid black faded to the measured 0.50.
+        scrim.animate().alpha(if (isV5()) 1f else 0.5f).setDuration(150).start()
         panel.scaleX = 0.9f; panel.scaleY = 0.9f; panel.alpha = 0f
         panel.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(150)
             .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
@@ -2537,30 +2899,53 @@ class MainActivity : Activity() {
         scroll.addView(buildQuickAdd())
     }
 
+    /** v5 sheet surface (SHADOW-FOUR §2.8): flat V5.SHEET, R_SHEET on
+     *  the TOP corners only — the sheet is attached to the screen's
+     *  bottom edge, so the bottom corners stay square. */
+    private fun v5SheetBg(): android.graphics.drawable.GradientDrawable {
+        val g = android.graphics.drawable.GradientDrawable()
+        val r = dp(V5.R_SHEET).toFloat()
+        g.cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+        g.setColor(V5.SHEET)
+        return g
+    }
+
     private fun showSheet(sheetContent: View) {
         sheetGen++
         sheetClosing = false
         sheetIsQa = false
         sheetRoot.removeAllViews()
         val scrim = View(this)
-        scrim.setBackgroundColor(if (Glass.isWhite(this)) 0x66020208 else 0xB3020208.toInt())
+        scrim.setBackgroundColor(if (isV5()) V5.SCRIM
+            else if (Glass.isWhite(this)) 0x66020208 else 0xB3020208.toInt())
         scrim.setOnClickListener { attemptCloseSheet() }
         sheetRoot.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         val panel = LinearLayout(this)
         panel.orientation = LinearLayout.VERTICAL
-        panel.background = Glass.sheetPanel(this, 30f)
-        panel.setPadding(dp(18f), dp(14f), dp(18f), dp(18f))
+        if (isV5()) {
+            // §2.8 sheet: attached bottom sheet, SHEET fill, R_SHEET top
+            // corners, 20dp content padding, HANDLE drag pill. Flat —
+            // and setBackdropBlur() is a no-op under v5 (CHECK1 P1).
+            panel.background = v5SheetBg()
+            panel.setPadding(dp(20f), dp(10f), dp(20f), dp(20f))
+        } else {
+            panel.background = Glass.sheetPanel(this, 30f)
+            panel.setPadding(dp(18f), dp(14f), dp(18f), dp(18f))
+        }
         val pp = FrameLayout.LayoutParams(-1, -2)
         pp.gravity = Gravity.BOTTOM
-        pp.setMargins(dp(8f), 0, dp(8f), dp(8f))
+        if (isV5()) pp.setMargins(0, 0, 0, 0)
+        else pp.setMargins(dp(8f), 0, dp(8f), dp(8f))
         panel.layoutParams = pp
-        Glass.elevate(this, panel, 30f, 28f)
+        Glass.elevate(this, panel, if (isV5()) V5.R_SHEET else 30f, 28f)
         val handle = View(this)
         val hg = android.graphics.drawable.GradientDrawable()
         hg.cornerRadius = dp(3f).toFloat()
-        hg.setColor(if (Glass.isWhite(this)) android.graphics.Color.argb(64, 20, 20, 35) else 0x59FFFFFF)
+        hg.setColor(if (isV5()) V5.HANDLE
+            else if (Glass.isWhite(this)) android.graphics.Color.argb(64, 20, 20, 35) else 0x59FFFFFF)
         handle.background = hg
-        handle.layoutParams = LinearLayout.LayoutParams(dp(38f), dp(5f)).apply {
+        handle.layoutParams = LinearLayout.LayoutParams(
+            dp(if (isV5()) 36f else 38f), dp(if (isV5()) 4f else 5f)).apply {
             gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(14f)
         }
         panel.addView(handle)
@@ -2603,7 +2988,9 @@ class MainActivity : Activity() {
         sheetIsQa = false
         sheetRoot.visibility = View.GONE
         sheetRoot.removeAllViews()
-        fabBtn.visibility = View.VISIBLE
+        qaHintRun?.let { handler.removeCallbacks(it) }
+        qaHintRun = null
+        fabBtn.visibility = if (isV5()) View.GONE else View.VISIBLE
         navBar.visibility = View.VISIBLE
         if (undoWasVisible) { undoBar.visibility = View.VISIBLE; undoWasVisible = false }
         setBackdropBlur(false)
@@ -2708,7 +3095,7 @@ class MainActivity : Activity() {
     private fun qaHasDraft(): Boolean =
         qaText.isNotBlank() || qaDate != null || qaTime != null || qaRecSet ||
         qaPriority != null || qaProjectSet || qaRemSet || qaLabelIds.isNotEmpty() ||
-        qaNotes.isNotBlank() || qaLocLat != null || qaDeadline != null
+        qaNotes.isNotBlank() || qaLocLat != null || qaDeadline != null || qaSubtasks.isNotEmpty()
 
     /** Reset every Quick Add field to a blank draft (Batch 9). */
     private fun clearQaDraft() {
@@ -2726,6 +3113,7 @@ class MainActivity : Activity() {
         qaDeadline = null; qaPickingDeadline = false
         qaCursor = java.util.Calendar.getInstance()
         qaDraftResumed = false
+        qaSubtasks.clear(); qaShowSubtasks = false
     }
 
     private fun openQuickAdd(presetDate: String?) {
@@ -2809,6 +3197,27 @@ class MainActivity : Activity() {
         // (ANALYSIS §11 — the reference has no input box at all).
         val inp = EditText(this)
         inp.hint = qaPlaceholders[qaPlaceholderIdx % qaPlaceholders.size]
+        if (isV5()) {
+            // Rotating example hints (SHADOW-THREE-DESIGN §8.1): cycle
+            // every 3.5s while the field is empty. The loop stops itself
+            // on the first keystroke (qaText non-empty) and
+            // finishCloseSheet cancels it when the sheet closes.
+            inp.hint = qaHints[qaHintIdx % qaHints.size]
+            qaHintRun?.let { handler.removeCallbacks(it) }
+            qaHintRun = null
+            if (qaText.isEmpty()) {
+                val run = object : Runnable {
+                    override fun run() {
+                        if (qaText.isNotEmpty() || sheetRoot.visibility != View.VISIBLE) return
+                        qaHintIdx++
+                        inp.hint = qaHints[qaHintIdx % qaHints.size]
+                        handler.postDelayed(this, 3500)
+                    }
+                }
+                qaHintRun = run
+                handler.postDelayed(run, 3500)
+            }
+        }
         inp.setText(qaText)
         inp.setSelection(inp.text.length)
         inp.textSize = 20f
@@ -2840,6 +3249,35 @@ class MainActivity : Activity() {
         if (qaShowNotes) {
             notesIn = input("Description / notes", qaNotes, multi = true)
             col.addView(notesIn)
+        }
+
+        if (qaShowSubtasks) {
+            // Inline subtask editor (v5, §8.2): committed rows live in
+            // the qaSubtasks field so they survive sheet rebuilds; on
+            // submit they attach to the created task in qaSubmit.
+            qaSubtasks.forEach { st ->
+                val r = LinearLayout(this); r.orientation = LinearLayout.HORIZONTAL
+                r.gravity = Gravity.CENTER_VERTICAL
+                r.setPadding(0, dp(4f), 0, dp(4f))
+                r.addView(tv("○", 14f, Glass.muted(this@MainActivity)))
+                val stT = tv(st, 15f)
+                stT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(8f) }
+                r.addView(stT)
+                val del = tv("✕", 14f, Glass.muted(this@MainActivity))
+                del.contentDescription = "Remove subtask"
+                del.setOnClickListener { qaSubtasks.remove(st); refreshQaSheet() }
+                r.addView(del)
+                col.addView(r)
+            }
+            val addRow = LinearLayout(this); addRow.orientation = LinearLayout.HORIZONTAL
+            val subIn = input("Add a subtask")
+            subIn.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val subAddBtn = ghostBtn("Add") {
+                val v = subIn.text.toString().trim()
+                if (v.isNotEmpty()) { qaSubtasks.add(v); refreshQaSheet() }
+            }
+            addRow.addView(subIn); addRow.addView(subAddBtn)
+            col.addView(addRow)
         }
 
         // Floating popup card host (priority / projects / "+" /
@@ -2989,6 +3427,8 @@ class MainActivity : Activity() {
                 "plus" -> {
                     popupBox.addView(qaPopupRow("✂️", "Extract tasks…") { hidePopup(); closeSheet(); sub = "assist"; render() })
                     popupBox.addView(qaPopupRow("☰", "Description") { qaShowNotes = true; refreshQaSheet() })
+                    popupBox.addView(qaPopupRow("☰", "Subtasks") { qaShowSubtasks = true; refreshQaSheet() })
+                    popupBox.addView(qaPopupRow("▤", "Templates") { pushSheet(buildQaTemplates()) { buildQuickAdd() } })
                     popupBox.addView(qaPopupRow("🏷️", "Labels") { pushSheet(buildQaLabels()) { buildQuickAdd() } })
                     popupBox.addView(qaPopupRow("🎯", "Deadline") { qaPickingDeadline = true; pushSheet(buildQaDatePicker()) { buildQuickAdd() } })
                     popupBox.addView(qaPopupRow("📍", "Location") { captureLocationQa() })
@@ -3170,6 +3610,7 @@ class MainActivity : Activity() {
         qaLabelIds.forEach { if (!t.labelIds.contains(it)) t.labelIds.add(it) }
         if (qaNotes.isNotEmpty()) t.notes = qaNotes
         if (qaLocLat != null) { t.locLat = qaLocLat; t.locLng = qaLocLng }
+        qaSubtasks.forEach { st -> t.subtasks.add(Subtask(uid(), st, false)) }
         Reminders.sync(this, t)
         Reminders.syncGeo(this, t)
         Store.save()
@@ -3249,7 +3690,7 @@ class MainActivity : Activity() {
         fun toggleRow(labelText: String, note: String?, on: Boolean, flip: (Boolean) -> Unit) {
             val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
-            row.background = roundedRect(TD_CARD, 14f)
+            row.background = roundedRect(cardFill(), 14f)
             row.setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
             row.layoutParams = lp(t = dp(12f))
             val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
@@ -3303,7 +3744,7 @@ class MainActivity : Activity() {
         visible.forEachIndexed { idx, id ->
             val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
-            row.background = roundedRect(TD_CARD, 14f)
+            row.background = roundedRect(cardFill(), 14f)
             row.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
             row.layoutParams = lp(b = dp(8f))
             if (id == "project") {
@@ -3355,7 +3796,7 @@ class MainActivity : Activity() {
             hidden.forEach { id ->
                 val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
                 row.gravity = Gravity.CENTER_VERTICAL
-                row.background = roundedRect(TD_CARD, 14f)
+                row.background = roundedRect(cardFill(), 14f)
                 row.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
                 row.layoutParams = lp(b = dp(8f))
                 val plus = tv("+", 16f, 0xFFBF5AF2.toInt(), true)
@@ -3622,6 +4063,7 @@ class MainActivity : Activity() {
         quickRow("📅", "Today", Dates.today())
         quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
         quickRow("⏭️", "Next week", Dates.addDays(Dates.today(), 7))
+        quickRow("📆", "Next Monday", Dates.nextWeekday(1))
         if (activeDate() != null) {
             val clr = tv("✕  Clear date", 15f, Glass.overdue(this@MainActivity))
             clr.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
@@ -3643,14 +4085,25 @@ class MainActivity : Activity() {
         if (!qaPickingDeadline) {
             val timeRow = qaMenuRow("🕐", if (qaTime != null) "Time · " + qaTime else "Add time", null) { pushSheet(buildQaTimePicker()) { buildQaDatePicker() } }
             col.addView(timeRow)
-            val recLbl = when {
-                !qaRecSet || qaRecurrence == null -> "Repeat"
-                qaRecurrence == "daily" -> "Repeat · Daily"
-                qaRecurrence == "weekly" -> "Repeat · Weekly"
-                qaRecurrence == "monthly" -> "Repeat · Monthly"
-                else -> "Repeat · " + qaRecurrence
+            // The summary is generated from the due date itself
+            // (RepeatLabels, §8.4): "Repeat · Monthly on the 21 day",
+            // with a ✕ that clears back to No repeat.
+            val recLbl = if (!qaRecSet || qaRecurrence == null) "Repeat"
+                else "Repeat · " + RepeatLabels.summaryLabel(qaRecurrence, activeDate() ?: Dates.today())
+            val recRow = LinearLayout(this); recRow.orientation = LinearLayout.HORIZONTAL
+            recRow.gravity = Gravity.CENTER_VERTICAL
+            val recMenu = qaMenuRow("🔁", recLbl, null) { pushSheet(buildQaRepeat()) { buildQaDatePicker() } }
+            recMenu.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            recRow.addView(recMenu)
+            if (qaRecSet) {
+                val clrRec = tv("✕", 15f, Glass.muted(this@MainActivity), true)
+                clrRec.gravity = Gravity.CENTER
+                clrRec.setPadding(dp(12f), dp(12f), dp(6f), dp(12f))
+                clrRec.contentDescription = "Clear repeat"
+                clrRec.setOnClickListener { qaRecSet = false; qaRecurrence = null; showSheet(buildQaDatePicker()) }
+                recRow.addView(clrRec)
             }
-            col.addView(qaMenuRow("🔁", recLbl, null) { pushSheet(buildQaRepeat()) { buildQaDatePicker() } })
+            col.addView(recRow)
         }
         // Save — red rounded-rectangle, bottom-right (not a pill).
         val saveRow = LinearLayout(this); saveRow.orientation = LinearLayout.HORIZONTAL
@@ -3662,10 +4115,38 @@ class MainActivity : Activity() {
         save.gravity = Gravity.CENTER
         save.background = roundedRect(TD_RED, 10f)
         save.layoutParams = LinearLayout.LayoutParams(dp(72f), dp(40f))
-        save.setOnClickListener { qaPickingDeadline = false; returnToQuickAdd() }
+        save.setOnClickListener {
+            val editId = taskDateEditId
+            if (editId != null) {
+                // Opened from a task's swipe Date action: the pick writes
+                // straight onto that task, not the Quick Add draft.
+                val t = Store.byId(editId)
+                if (t != null) {
+                    t.dueDate = qaDate
+                    t.dueTime = qaTime
+                    // The sheet was preloaded with the task's own
+                    // recurrence: write back whatever the repeat row
+                    // now holds (unchanged, changed, or cleared).
+                    t.recurrence = if (qaRecSet) qaRecurrence else null
+                    Reminders.sync(this, t)
+                    Store.save()
+                }
+                taskDateEditId = null
+                qaDate = null; qaTime = null
+                qaPickingDeadline = false
+                closeSheet(); render()
+            } else {
+                qaPickingDeadline = false; returnToQuickAdd()
+            }
+        }
         saveRow.addView(save)
         col.addView(saveRow)
-        val back = ghostBtn("← Back") { qaPickingDeadline = false; if (!popSheet()) returnToQuickAdd() }
+        val back = ghostBtn("← Back") {
+            qaPickingDeadline = false
+            if (taskDateEditId != null) {
+                taskDateEditId = null; qaDate = null; qaTime = null; closeSheet()
+            } else if (!popSheet()) returnToQuickAdd()
+        }
         back.layoutParams = lp(t = dp(10f))
         col.addView(back)
         return col
@@ -3714,7 +4195,9 @@ class MainActivity : Activity() {
         )
         opts.forEach { (lbl, v) ->
             val on = qaRecSet && qaRecurrence == v
-            val row = tv("🔁  $lbl" + if (on) "  ✓" else "", 15f)
+            // Menu labels are generated from the due date (RepeatLabels):
+            // "Weekly (Sat)", "Monthly (The 21 day)"… (§8.4).
+            val row = tv("🔁  " + (if (v == null) lbl else RepeatLabels.menuLabel(v, qaDate ?: Dates.today())) + if (on) "  ✓" else "", 15f)
             row.setPadding(dp(4f), dp(11f), dp(4f), dp(11f))
             row.setOnClickListener {
                 qaRecSet = true; qaRecurrence = v
@@ -3850,6 +4333,8 @@ class MainActivity : Activity() {
         col.addView(label("Reminder (fires even if app is closed)"))
         val edRem = spinner(remLabels, remValues.indexOf(t.reminderOffsetMin).coerceAtLeast(0)); col.addView(edRem)
         exactAlarmHint()?.let { col.addView(it) }
+        // Starred (v5): local field, folded into stash/dirty/Save below.
+        var edStarred = t.starred
 
         // Copy in-progress field edits into the task before any action that
         // rebuilds this sheet (subtasks, location), so typed text isn't lost.
@@ -3869,6 +4354,7 @@ class MainActivity : Activity() {
             }
             t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
             t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
+            t.starred = edStarred
             // Stash+save flows persist the fields, so the discard guard's
             // snapshot must track the last saved state too.
             editorSnapshot = t.copy()
@@ -3890,7 +4376,8 @@ class MainActivity : Activity() {
                 projIds[edProj.selectedItemPosition] != projIds[projIds.indexOf(s.projectId).coerceAtLeast(0)] ||
                 secIds[edSec.selectedItemPosition] != secIds[secIds.indexOf(s.sectionId).coerceAtLeast(0)] ||
                 edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 } != s.durationMin ||
-                remValues[edRem.selectedItemPosition] != remValues[remValues.indexOf(s.reminderOffsetMin).coerceAtLeast(0)]
+                remValues[edRem.selectedItemPosition] != remValues[remValues.indexOf(s.reminderOffsetMin).coerceAtLeast(0)] ||
+                edStarred != s.starred
         }
 
         // When the project changes, stash everything typed so far (the
@@ -3910,6 +4397,26 @@ class MainActivity : Activity() {
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+
+        col.addView(label("Starred"))
+        val starRow = LinearLayout(this); starRow.orientation = LinearLayout.HORIZONTAL
+        starRow.gravity = Gravity.CENTER_VERTICAL
+        starRow.setPadding(0, dp(4f), 0, dp(4f))
+        val starGlyph = tv(if (edStarred) "★" else "☆", 20f, if (edStarred) 0xFFFFD60A.toInt() else Glass.muted(this@MainActivity))
+        starGlyph.layoutParams = LinearLayout.LayoutParams(dp(32f), -2)
+        starRow.addView(starGlyph)
+        val starLbl = tv("Starred", 15f)
+        starLbl.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        starRow.addView(starLbl)
+        starRow.addView(switchView(edStarred))
+        starRow.setOnClickListener {
+            edStarred = !edStarred
+            stash()
+            Store.save()
+            Sfx.tick()
+            showSheet(buildEditor(t))
+        }
+        col.addView(starRow)
 
         col.addView(label("Location reminder"))
         if (t.locLat != null) {
@@ -3966,6 +4473,19 @@ class MainActivity : Activity() {
         }
         breakdown.layoutParams = lp(t = dp(6f), b = dp(10f))
         col.addView(breakdown)
+        if (t.subtasks.isNotEmpty()) {
+            // v5: the editor's subtasks can become a reusable checklist
+            // template (SHADOW-THREE-DESIGN §8.3).
+            val saveTpl = ghostBtn("▤ Save subtasks as checklist template") {
+                stash()
+                promptText("Checklist name:") { name ->
+                    Store.addChecklistTemplate(name, t.subtasks.map { it.title })
+                    toast("Checklist template saved")
+                }
+            }
+            saveTpl.layoutParams = lp(b = dp(10f))
+            col.addView(saveTpl)
+        }
 
         val save = accentBtn("Save") {
             val dateTxt = edDate.text.toString().trim()
@@ -3990,6 +4510,7 @@ class MainActivity : Activity() {
             }
             t.durationMin = edDur.text.toString().trim().toIntOrNull()?.takeIf { it > 0 }
             t.reminderOffsetMin = remValues[edRem.selectedItemPosition]
+            t.starred = edStarred
             Reminders.sync(this, t)
             Reminders.syncGeo(this, t)
             Store.save()
@@ -4103,6 +4624,2333 @@ class MainActivity : Activity() {
 
     /* ----- Calendar ----- */
 
+    /* ================= v5 (SHADOW-THREE + SHADOW-FOUR) =================
+       Everything below in this section is new v5 code. v5 surfaces are
+       FLAT and OPAQUE — roundedRect fills only, never Glass.panel /
+       sheetPanel gradients (Jervis ruling 2). The v4.0 screens above
+       keep working untouched when a rollback theme is selected. */
+
+    private fun isV5() = Glass.isV5(this)
+
+    /** The one card fill: V5.CARD under the v5 theme, TD_CARD otherwise,
+     *  so shared builders (grouped containers, prod cards, sheets) pick
+     *  up the v5 surface without forking their code. */
+    private fun cardFill(): Int = if (isV5()) V5.CARD else TD_CARD
+
+    /** Chrome for the bottom bar: under v5 it becomes the floating pill
+     *  dock (POPUP fill, 64dp, 20dp side margins, 14dp above the screen
+     *  edge); other themes keep the attached flat bar. Called from
+     *  buildRoot and applyTheme so a runtime theme switch restyles it. */
+    private fun styleNavBar() {
+        if (isV5()) {
+            navBar.background = roundedRect(V5.POPUP, 999f, V5.HAIRLINE)
+            navBar.setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+            val np = FrameLayout.LayoutParams(-1, dp(64f))
+            np.gravity = Gravity.BOTTOM
+            np.setMargins(dp(20f), 0, dp(20f), dp(14f))
+            navBar.layoutParams = np
+            Glass.elevate(this, navBar, 999f, 8f)
+        } else {
+            navBar.background = null
+            navBar.setBackgroundColor(TD_NAV)
+            navBar.setPadding(dp(4f), dp(6f), dp(4f), dp(6f))
+            val np = FrameLayout.LayoutParams(-1, -2)
+            np.gravity = Gravity.BOTTOM
+            navBar.layoutParams = np
+        }
+    }
+
+    private fun v5CardBg(radius: Float = V5.R_CARD, fill: Int = V5.CARD): android.graphics.drawable.GradientDrawable =
+        roundedRect(fill, radius, V5.HAIRLINE)
+
+    /** Tinted icon square (§2.9): ~15% hue tint fill, solid glyph. */
+    private fun iconWell(glyph: String, color: Int, boxDp: Float = 28f, glyphSp: Float = 14f): TextView {
+        val t = tv(glyph, glyphSp, color, true)
+        t.gravity = Gravity.CENTER
+        t.background = roundedRect(V5.tint(color, 38), 9f)
+        t.layoutParams = LinearLayout.LayoutParams(dp(boxDp), dp(boxDp))
+        return t
+    }
+
+    /** Empty state (§2.11): accent-tint circle glyph, title, caption. */
+    private fun v5EmptyState(glyph: String, title: String, caption: String): LinearLayout {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER_HORIZONTAL
+        col.setPadding(dp(24f), dp(40f), dp(24f), dp(24f))
+        val ic = tv(glyph, 26f, V5.ACCENT_BRAND, true)
+        ic.gravity = Gravity.CENTER
+        ic.background = ovalDrawable(V5.ACCENT_TINT)
+        ic.layoutParams = LinearLayout.LayoutParams(dp(56f), dp(56f))
+        col.addView(ic)
+        val tt = tv(title, 17f, V5.TEXT, true)
+        tt.gravity = Gravity.CENTER
+        tt.layoutParams = lp(t = dp(14f))
+        col.addView(tt)
+        val cc = tv(caption, 13f, V5.MUTED)
+        cc.gravity = Gravity.CENTER
+        cc.layoutParams = lp(t = dp(4f))
+        col.addView(cc)
+        return col
+    }
+
+    /* ---------------- v5 Today ---------------- */
+
+    /** Week day-pills (§2.4): tall pills for the week containing
+     *  [selected]; selected = accent fill, today = accent ring, task
+     *  dot underneath the number. */
+    private fun v5DayPills(selected: String, onPick: (String) -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val monday = Stats.weekStart(selected)
+        val letters = listOf("M", "T", "W", "T", "F", "S", "S")
+        for (i in 0..6) {
+            val d = Dates.addDays(monday, i)
+            val isSel = d == selected
+            val isToday = d == Dates.today()
+            val cell = LinearLayout(this); cell.orientation = LinearLayout.VERTICAL
+            cell.gravity = Gravity.CENTER
+            cell.layoutParams = LinearLayout.LayoutParams(0, dp(68f), 1f).apply { if (i > 0) leftMargin = dp(6f) }
+            cell.background = when {
+                isSel -> roundedRect(V5.ACCENT, V5.R_DAYPILL)
+                isToday -> roundedRect(V5.CARD, V5.R_DAYPILL, V5.ACCENT)
+                else -> roundedRect(V5.CARD, V5.R_DAYPILL)
+            }
+            val lt = tv(letters[i], 11f, if (isSel) 0xFFFFFFFF.toInt() else V5.MUTED, true)
+            lt.gravity = Gravity.CENTER
+            cell.addView(lt)
+            val num = tv(Dates.parse(d).get(java.util.Calendar.DAY_OF_MONTH).toString(), 18f,
+                if (isSel) 0xFFFFFFFF.toInt() else V5.TEXT, true)
+            num.gravity = Gravity.CENTER
+            cell.addView(num)
+            val has = Store.state.tasks.any { it.dueDate == d }
+            val dot = View(this)
+            dot.background = ovalDrawable(
+                if (has) (if (isSel) 0xFFFFFFFF.toInt() else V5.FAINT) else android.graphics.Color.TRANSPARENT)
+            dot.layoutParams = LinearLayout.LayoutParams(dp(4f), dp(4f)).apply { topMargin = dp(4f) }
+            cell.addView(dot)
+            val dd = d
+            cell.setOnClickListener { Sfx.tick(); onPick(dd) }
+            row.addView(cell)
+        }
+        return row
+    }
+
+    /** The 4 stat tiles (§2.5) for the selected day. */
+    private fun v5StatTiles(day: String): LinearLayout {
+        val today = Dates.today()
+        val due = Store.state.tasks.filter { it.dueDate == day }
+        val doneN = Stats.countOn(Store.state.completions, day)
+        val urgent = due.count { it.priority == 1 } +
+            if (day == today) Store.state.tasks.count { Dates.isOverdue(it) } else 0
+        data class Tile(val g: String, val c: Int, val v: String, val l: String)
+        val tiles = listOf(
+            // §2.4: the Total well is tinted with ACCENT (the earlier
+            // build used P3 blue — CHECK1 §3 P3).
+            Tile("▦", V5.ACCENT, (due.size + doneN).toString(), "Total"),
+            Tile("✓", V5.DONE, doneN.toString(), "Done"),
+            Tile("◷", V5.P2, due.size.toString(), "Pending"),
+            Tile("!", V5.ACCENT_BRAND, urgent.toString(), "Urgent")
+        )
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        tiles.forEachIndexed { i, tile ->
+            val cell = LinearLayout(this); cell.orientation = LinearLayout.VERTICAL
+            cell.background = v5CardBg(V5.R_TILE)
+            cell.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            // Spec height is ~92dp; 96 is the floor that fits the
+            // anatomy (10 + 28 well + 6 + 24sp number + 11sp label
+            // + 10) without clipping the label.
+            cell.layoutParams = LinearLayout.LayoutParams(0, dp(96f), 1f).apply { if (i > 0) leftMargin = dp(V5.TILE_GAP.toFloat()) }
+            cell.addView(iconWell(tile.g, tile.c, 28f, 14f))
+            val n = tv(tile.v, 24f, V5.TEXT, true)
+            n.layoutParams = lp(t = dp(6f))
+            cell.addView(n)
+            cell.addView(tv(tile.l, 11f, V5.MUTED))
+            row.addView(cell)
+        }
+        return row
+    }
+
+    /** Hero card (§2.7): accent-tint surface; label → Karma statement →
+     *  points (muted suffix) → goal-fraction bar + big % → meta line;
+     *  streak chip and round CTA on the right. */
+    private fun v5Hero(): LinearLayout {
+        val today = Dates.today()
+        val comps = Store.state.completions
+        val info = Karma.levelFor(Store.state.karmaPoints)
+        val gp = Stats.goalProgress(comps, today, Store.state.dailyGoal, Store.state.weeklyGoal)
+        val hero = LinearLayout(this); hero.orientation = LinearLayout.HORIZONTAL
+        hero.background = roundedRect(V5.ACCENT_TINT, V5.R_HERO, V5.ACCENT_TINT_DEEP)
+        hero.setPadding(dp(18f), dp(18f), dp(18f), dp(18f))
+        hero.layoutParams = lp(t = dp(16f))
+        val left = LinearLayout(this); left.orientation = LinearLayout.VERTICAL
+        left.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        val cap = tv("TODAY'S PROGRESS", 11f, V5.ACCENT_BRAND, true)
+        cap.letterSpacing = 0.08f
+        left.addView(cap)
+        val stmt = tv(info.name, 22f, V5.TEXT, true)
+        stmt.layoutParams = lp(t = dp(6f))
+        left.addView(stmt)
+        val ptsStr = Store.state.karmaPoints.toString()
+        val suffix = if (info.nextName != null) " pts · " + info.pointsToNext + " to " + info.nextName
+            else " pts · top level"
+        val span = android.text.SpannableString(ptsStr + suffix)
+        span.setSpan(android.text.style.ForegroundColorSpan(V5.MUTED),
+            ptsStr.length, ptsStr.length + suffix.length, 0)
+        val pts = tv("", 13f, V5.TEXT, true)
+        pts.text = span
+        pts.layoutParams = lp(t = dp(2f))
+        left.addView(pts)
+        val frac = if (Store.state.dailyGoal > 0) gp.dailyFraction else info.progress
+        val prow = LinearLayout(this); prow.orientation = LinearLayout.HORIZONTAL
+        prow.gravity = Gravity.CENTER_VERTICAL
+        prow.layoutParams = lp(t = dp(12f))
+        val track = FrameLayout(this)
+        track.background = roundedRect(android.graphics.Color.argb(26, 255, 255, 255), 999f)
+        track.layoutParams = LinearLayout.LayoutParams(0, dp(6f), 1f)
+        val fill = View(this)
+        fill.background = roundedRect(V5.ACCENT, 999f)
+        fill.layoutParams = FrameLayout.LayoutParams(0, -1)
+        track.addView(fill)
+        track.post {
+            fill.layoutParams = FrameLayout.LayoutParams((track.width * frac).toInt().coerceAtLeast(0), -1)
+            fill.requestLayout()
+        }
+        prow.addView(track)
+        val pct = tv(Math.round(frac * 100).toString() + "%", 28f, V5.TEXT, true)
+        pct.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12f) }
+        prow.addView(pct)
+        left.addView(prow)
+        val meta = tv(
+            if (Store.state.dailyGoal > 0) gp.dailyDone.toString() + " of " + Store.state.dailyGoal + " tasks done today"
+            else "Level progress · set a daily goal in Productivity",
+            12f, V5.MUTED)
+        meta.layoutParams = lp(t = dp(8f))
+        left.addView(meta)
+        hero.addView(left)
+        val right = LinearLayout(this); right.orientation = LinearLayout.VERTICAL
+        right.gravity = Gravity.END
+        right.layoutParams = LinearLayout.LayoutParams(-2, -1).apply { leftMargin = dp(12f) }
+        val streak = Stats.currentStreak(comps, today)
+        val chip = tv("🔥 " + streak + if (streak == 1) " day" else " days", 12f, V5.DONE, true)
+        chip.background = roundedRect(V5.tint(V5.DONE, 38), 999f)
+        chip.setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
+        right.addView(chip)
+        val spacer = View(this)
+        spacer.layoutParams = LinearLayout.LayoutParams(1, 0, 1f)
+        right.addView(spacer)
+        val cta = tv("›", 22f, 0xFFFFFFFF.toInt(), true)
+        cta.gravity = Gravity.CENTER
+        cta.background = ovalDrawable(V5.ACCENT)
+        cta.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        cta.contentDescription = "Open Productivity"
+        cta.setOnClickListener { Sfx.nav(); sub = "stats"; render() }
+        right.addView(cta)
+        hero.addView(right)
+        return hero
+    }
+
+    /** Quick Add ghost pill (§2.2): CARD fill, HAIRLINE, full pill,
+     *  "+" in ACCENT + "Add new task" in PLACEHOLDER. Shared by Today
+     *  and Inbox (both are capture surfaces). Caller sets the height /
+     *  margins via layoutParams. */
+    private fun v5GhostPill(): LinearLayout {
+        val ghost = LinearLayout(this); ghost.orientation = LinearLayout.HORIZONTAL
+        ghost.gravity = Gravity.CENTER_VERTICAL
+        ghost.background = roundedRect(V5.CARD, 999f, V5.HAIRLINE)
+        ghost.setPadding(dp(18f), 0, dp(18f), 0)
+        ghost.addView(tv("+", 20f, V5.ACCENT, true))
+        val gh = tv("Add new task", 14f, V5.PLACEHOLDER)
+        gh.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10f) }
+        ghost.addView(gh)
+        ghost.contentDescription = "Add new task"
+        ghost.setOnClickListener { openQuickAdd(null) }
+        return ghost
+    }
+
+    private fun renderTodayV5() {
+        val today = Dates.today()
+        // Greeting header (§2.1): greeting + name left; grouped icon
+        // pill and the accent "S" medallion right.
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val greet = if (h < 12) "Good morning" else if (h < 17) "Good afternoon" else "Good evening"
+        val gcol = LinearLayout(this); gcol.orientation = LinearLayout.VERTICAL
+        gcol.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        gcol.addView(tv(greet + ",", 12f, V5.MUTED))
+        val name = tv("Sir", 30f, V5.TEXT, true)
+        name.layoutParams = lp(t = dp(2f))
+        gcol.addView(name)
+        head.addView(gcol)
+        val pill = LinearLayout(this); pill.orientation = LinearLayout.HORIZONTAL
+        pill.gravity = Gravity.CENTER
+        pill.background = roundedRect(V5.POPUP, 999f, V5.HAIRLINE)
+        pill.layoutParams = LinearLayout.LayoutParams(-2, dp(40f))
+        val sI = tv("⌕", 19f, V5.TEXT)
+        sI.gravity = Gravity.CENTER
+        sI.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        sI.contentDescription = "Search"
+        sI.setOnClickListener { sub = "search"; render() }
+        val oI = tv("⋮", 19f, V5.TEXT, true)
+        oI.gravity = Gravity.CENTER
+        oI.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        oI.contentDescription = "More options"
+        oI.setOnClickListener { showOverflowMenu(it) }
+        pill.addView(sI); pill.addView(oI)
+        val med = tv("S", 17f, V5.ACCENT_BRAND, true)
+        med.gravity = Gravity.CENTER
+        med.background = ovalDrawable(V5.ACCENT_TINT)
+        med.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { rightMargin = dp(10f) }
+        // §2.1 order: the medallion sits to the LEFT of the grouped pill.
+        head.addView(med)
+        head.addView(pill)
+        content.addView(head)
+
+        // Quick Add ghost pill (§2.2) — no floating FAB anywhere in v5.
+        val ghost = v5GhostPill()
+        ghost.layoutParams = lp(h = dp(52f), t = dp(16f))
+        content.addView(ghost)
+
+        val pills = v5DayPills(v5DaySel) { d -> v5DaySel = d; render() }
+        pills.layoutParams = lp(t = dp(20f))
+        content.addView(pills)
+
+        val tiles = v5StatTiles(v5DaySel)
+        tiles.layoutParams = lp(t = dp(16f))
+        content.addView(tiles)
+
+        content.addView(v5Hero())
+
+        val isToday = v5DaySel == today
+        val key = displayKey()
+        val overdue = if (isToday) applyDisplay(Store.state.tasks.filter { Dates.isOverdue(it) }, key)
+            else emptyList()
+        val dayTasks = applyDisplay(Store.state.tasks.filter { it.dueDate == v5DaySel }, key)
+        // Section header (§3.1.6): title + task count in FAINT + the
+        // Display icon circle.
+        val planHead = LinearLayout(this); planHead.orientation = LinearLayout.HORIZONTAL
+        planHead.gravity = Gravity.CENTER_VERTICAL
+        planHead.layoutParams = lp(t = dp(24f), b = dp(12f))
+        val pt = tv(if (isToday) "Today's Plan" else fmtDayLong(v5DaySel), 20f, V5.TEXT, true)
+        pt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        planHead.addView(pt)
+        val cnt = tv((overdue.size + dayTasks.size).toString(), 15f, V5.FAINT, true)
+        cnt.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
+        planHead.addView(cnt)
+        val dI = tv("▤", 18f, V5.TEXT)
+        dI.gravity = Gravity.CENTER
+        dI.background = roundedRect(V5.POPUP, 999f)
+        dI.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f))
+        dI.contentDescription = "Display"
+        dI.setOnClickListener { showDisplaySheet() }
+        planHead.addView(dI)
+        content.addView(planHead)
+
+        if (overdue.isNotEmpty()) {
+            val ol = tv("Overdue", 12f, V5.OVERDUE, true)
+            ol.layoutParams = lp(b = dp(8f))
+            content.addView(ol)
+            content.addView(v5CardList(overdue, showProject = true, swipe = true, drag = false))
+        }
+        if (dayTasks.isEmpty()) {
+            // "All clear" only when there is genuinely nothing on the
+            // day — an overdue group above already fills the plan.
+            if (overdue.isEmpty())
+                content.addView(v5EmptyState("✓", "All clear", "Nothing due this day. Enjoy the space."))
+        } else {
+            content.addView(v5CardList(dayTasks, showProject = true, swipe = true, drag = true))
+        }
+        if (dispShowFor(key)) completedGroup(v5DaySel)
+    }
+
+    /* ---------------- v5 task cards + swipe + drag ---------------- */
+
+    /** Meta row under the card title (§2.6): label chip + "+n", due
+     *  chip in semantic colour, recurrence/reminder glyphs, project
+     *  name on cross-project lists. */
+    private fun v5MetaRow(t: TaskItem, showProject: Boolean): LinearLayout? {
+        val parts = mutableListOf<View>()
+        if (t.labelIds.isNotEmpty()) {
+            val l0 = Store.state.labels.find { it.id == t.labelIds[0] }
+            if (l0 != null) {
+                val chip = tv("🏷 " + l0.name, 11f, V5.MUTED)
+                chip.background = roundedRect(android.graphics.Color.argb(15, 255, 255, 255), 999f)
+                chip.setPadding(dp(8f), dp(3f), dp(8f), dp(3f))
+                parts.add(chip)
+                if (t.labelIds.size > 1) {
+                    // §2.6.5: the "+n" extra-labels indicator is a
+                    // second chip, not bare text.
+                    val more = tv("+" + (t.labelIds.size - 1), 11f, V5.MUTED)
+                    more.background = roundedRect(android.graphics.Color.argb(15, 255, 255, 255), 999f)
+                    more.setPadding(dp(8f), dp(3f), dp(8f), dp(3f))
+                    parts.add(more)
+                }
+            }
+        }
+        if (t.dueDate != null) {
+            val seg = tv("▦ " + dateWordFor(t) + if (t.dueTime != null) " " + t.dueTime else "",
+                12f, V5.dateColor(t.dueDate))
+            parts.add(seg)
+        }
+        if (t.recurrence != null) parts.add(tv("↻", 12f, V5.FAINT))
+        if (t.reminderOffsetMin != null) parts.add(tv("🔔", 11f, V5.FAINT))
+        if (showProject && t.projectId != null) {
+            val pn = Store.state.projects.find { it.id == t.projectId }?.name
+            if (pn != null) parts.add(tv(pn, 11f, V5.FAINT))
+        }
+        if (parts.isEmpty()) return null
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        parts.forEachIndexed { i, v ->
+            if (i > 0) v.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10f) }
+            row.addView(v)
+        }
+        return row
+    }
+
+    /** The v5 task card (§2.6): project-colour left bar, priority-ring
+     *  checkbox, title with the reserved star slot + "!" badge, meta
+     *  row, subtask progress at the bottom. Fully OPAQUE (ruling 2).
+     *  With [swipe] the card is wrapped in a SwipeRow. */
+    private fun v5TaskCard(t: TaskItem, showProject: Boolean, compact: Boolean = false, swipe: Boolean = false): View {
+        val card = LinearLayout(this); card.orientation = LinearLayout.HORIZONTAL
+        card.background = v5CardBg()
+        card.setPadding(dp(16f), dp(14f), dp(14f), dp(14f))
+        card.gravity = Gravity.TOP
+        val barColor = if (t.projectId == null) V5.FAINT else try {
+            android.graphics.Color.parseColor(
+                Store.state.projects.find { it.id == t.projectId }?.color ?: "#9e9ea8")
+        } catch (e: Exception) { V5.FAINT }
+        val bar = View(this)
+        bar.background = roundedRect(barColor, 2f)
+        bar.layoutParams = LinearLayout.LayoutParams(dp(4f), -1).apply { rightMargin = dp(12f) }
+        card.addView(bar)
+        val check = tv("", 12f, 0xFFFFFFFF.toInt(), true)
+        check.gravity = Gravity.CENTER
+        check.layoutParams = LinearLayout.LayoutParams(dp(24f), dp(24f))
+        if (selectMode) {
+            val isSel = t.id in selectedIds
+            check.text = if (isSel) "✓" else ""
+            check.background = if (isSel) ovalDrawable(V5.ACCENT) else {
+                val g = android.graphics.drawable.GradientDrawable()
+                g.shape = android.graphics.drawable.GradientDrawable.OVAL
+                g.setColor(android.graphics.Color.TRANSPARENT)
+                g.setStroke(dp(2f), V5.FAINT)
+                g
+            }
+            check.contentDescription = "Select task"
+            check.setOnClickListener { toggleSelected(t.id) }
+        } else {
+            check.background = Glass.checkCircle(this, t.priority, false)
+            check.contentDescription = "Complete task"
+            check.setOnClickListener { v5CompleteAnim(t, check) }
+        }
+        card.addView(check)
+        val body = LinearLayout(this); body.orientation = LinearLayout.VERTICAL
+        body.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        val titleRow = LinearLayout(this); titleRow.orientation = LinearLayout.HORIZONTAL
+        titleRow.gravity = Gravity.CENTER_VERTICAL
+        val title = tv(t.title, 16f, V5.TEXT, true)
+        title.maxLines = 2
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        titleRow.addView(title)
+        // Star slot: fixed 24dp at the right edge, BEFORE the due chip
+        // zone (ruling 4); empty when unstarred so titles never shift.
+        // Filled star = P2 amber (§2.6.7), not gold.
+        val star = tv(if (t.starred) "★" else "", 17f, V5.P2)
+        star.gravity = Gravity.CENTER
+        star.layoutParams = LinearLayout.LayoutParams(dp(24f), dp(24f))
+        star.contentDescription = "Toggle star"
+        star.setOnClickListener { Store.toggleStar(t.id); Sfx.tick(); render() }
+        titleRow.addView(star)
+        if (t.priority < 4) {
+            val badge = tv("!", 11f, 0xFFFFFFFF.toInt(), true)
+            badge.gravity = Gravity.CENTER
+            badge.background = ovalDrawable(priorityColor(t.priority))
+            badge.layoutParams = LinearLayout.LayoutParams(dp(18f), dp(18f))
+            titleRow.addView(badge)
+        }
+        body.addView(titleRow)
+        if (compact && t.dueDate != null) {
+            // §2.6 compact variant: description and the full meta row
+            // are omitted, but the due chip survives on its own.
+            val seg = tv("▦ " + dateWordFor(t) + if (t.dueTime != null) " " + t.dueTime else "",
+                12f, V5.dateColor(t.dueDate))
+            seg.layoutParams = lp(t = dp(6f))
+            body.addView(seg)
+        }
+        if (!compact && t.notes.isNotBlank()) {
+            val d = tv(t.notes.trim().lineSequence().firstOrNull() ?: "", 12f, V5.MUTED)
+            d.maxLines = 1
+            d.ellipsize = android.text.TextUtils.TruncateAt.END
+            d.layoutParams = lp(t = dp(3f))
+            body.addView(d)
+        }
+        if (!compact) {
+            val meta = v5MetaRow(t, showProject)
+            if (meta != null) {
+                meta.layoutParams = lp(t = dp(8f))
+                body.addView(meta)
+            }
+            if (t.subtasks.isNotEmpty()) {
+                val doneN = t.subtasks.count { it.done }
+                val srow = LinearLayout(this); srow.orientation = LinearLayout.HORIZONTAL
+                srow.gravity = Gravity.CENTER_VERTICAL
+                srow.layoutParams = lp(t = dp(10f))
+                val track = FrameLayout(this)
+                track.background = roundedRect(V5.TRACK, 999f)
+                track.layoutParams = LinearLayout.LayoutParams(0, dp(3f), 1f)
+                val fillv = View(this)
+                fillv.background = roundedRect(V5.ACCENT, 999f)
+                fillv.layoutParams = FrameLayout.LayoutParams(0, -1)
+                track.addView(fillv)
+                val frac = doneN.toFloat() / t.subtasks.size
+                track.post {
+                    fillv.layoutParams = FrameLayout.LayoutParams((track.width * frac).toInt().coerceAtLeast(0), -1)
+                    fillv.requestLayout()
+                }
+                srow.addView(track)
+                val cnt = tv("☰ $doneN/${t.subtasks.size}", 11f, V5.FAINT)
+                cnt.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8f) }
+                srow.addView(cnt)
+                body.addView(srow)
+            }
+        }
+        body.setOnClickListener { if (selectMode) toggleSelected(t.id) else openEditor(t.id) }
+        card.addView(body)
+        if (!swipe || selectMode) return card
+        val sr = SwipeRow(this)
+        sr.tag = t.id
+        sr.setCompleteReveal("✓", V5.DONE)
+        // Panel order from the screen edge inward: Delete (far edge),
+        // Focus, Date, Skip, Star (SHADOW-THREE §2). Delete is the P1
+        // family at 85% (CHECK1 §7.6); every tile carries its label
+        // under the glyph; the star glyph is P2 amber like the card's.
+        sr.setActions(listOf(
+            SwipeRow.Action("delete", "🗑", V5.tint(V5.P1, 217), 0xFFFFFFFF.toInt(), "Delete"),
+            SwipeRow.Action("focus", "⏳", V5.POPUP, V5.TEXT, "Focus"),
+            SwipeRow.Action("date", "▦", V5.POPUP, V5.TEXT, "Date"),
+            SwipeRow.Action("skip", "⤵", V5.POPUP, V5.TEXT, "Skip"),
+            SwipeRow.Action("star", "★", V5.POPUP, V5.P2, "Star")
+        ))
+        sr.onComplete = { swipeComplete(t) }
+        sr.onAction = { id -> swipeAction(t, id) }
+        sr.setContent(card)
+        return sr
+    }
+
+    /** Checkbox completion with the v5 feedback: green fill + ✓
+     *  (Glass.checkCircle's v5 filled state), then the shared flow. */
+    private fun v5CompleteAnim(t: TaskItem, check: TextView) {
+        check.isEnabled = false
+        check.background = Glass.checkCircle(this, t.priority, true)
+        check.text = "✓"
+        Sfx.complete()
+        vibrateOnce()
+        handler.postDelayed({
+            val msg = Store.completeTask(t.id)
+            if (msg.isNotEmpty()) toast(msg)
+            render()
+        }, 260)
+    }
+
+    private fun swipeComplete(t: TaskItem) {
+        Sfx.complete()
+        val msg = Store.completeTask(t.id)
+        if (msg.isNotEmpty()) toast(msg)
+        render()
+    }
+
+    private fun swipeAction(t: TaskItem, id: String) {
+        when (id) {
+            "star" -> { Store.toggleStar(t.id); Sfx.tick(); render() }
+            "skip" -> { Store.skipTask(t.id); Sfx.tick(); toast("Skipped — moved one day out"); render() }
+            "date" -> {
+                taskDateEditId = t.id
+                qaPickingDeadline = false
+                qaDate = t.dueDate
+                qaTime = t.dueTime
+                // Preload the task's own recurrence so the sheet shows
+                // (and Save preserves) its real repeat instead of a
+                // blank "Repeat" that silently dropped it.
+                qaRecurrence = t.recurrence
+                qaRecSet = t.recurrence != null
+                showSheet(buildQaDatePicker())
+            }
+            "focus" -> { focusTaskId = t.id; sub = "focus"; render() }
+            "delete" -> {
+                val idx = Store.state.tasks.indexOfFirst { it.id == t.id }
+                val removed = Store.deleteTask(t.id)
+                render()
+                if (removed != null) showUndo(removed, idx)
+            }
+        }
+    }
+
+    /** A vertical stack of v5 cards with CARD_GAP spacing — the v5
+     *  replacement for the grouped container in every list. */
+    private fun v5CardList(tasks: List<TaskItem>, showProject: Boolean, swipe: Boolean = true, drag: Boolean = false): LinearLayout {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.layoutParams = lp(b = dp(4f))
+        tasks.forEach { t ->
+            val v = v5TaskCard(t, showProject, swipe = swipe)
+            v.layoutParams = lp(b = dp(V5.CARD_GAP.toFloat()))
+            col.addView(v)
+            if (drag && v is SwipeRow) wireDrag(v, col)
+        }
+        return col
+    }
+
+    /** Long-press drag-sort wiring (SHADOW-THREE §2): the SwipeRow
+     *  detects the press and the vertical drag; here we swap neighbours
+     *  live and persist manualOrder on drop. */
+    private fun wireDrag(sr: SwipeRow, container: LinearLayout) {
+        sr.dragEnabled = true
+        sr.onDragStart = {
+            Sfx.hold()
+            sr.elevation = dp(8f).toFloat()
+            sr.animate().scaleX(1.02f).scaleY(1.02f).setDuration(120).start()
+            vibrateOnce()
+        }
+        sr.onDragMove = { ty -> dragSwap(container, sr, ty) }
+        sr.onDragEnd = {
+            sr.elevation = 0f
+            sr.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            var idx = 0
+            for (i in 0 until container.childCount) {
+                val id = container.getChildAt(i).tag as? String ?: continue
+                Store.byId(id)?.manualOrder = idx * 10
+                idx++
+            }
+            Store.save()
+        }
+    }
+
+    private fun dragSwap(container: LinearLayout, sr: SwipeRow, ty: Float) {
+        val rowH = sr.height + dp(V5.CARD_GAP.toFloat())
+        if (rowH <= 0) return
+        val idx = container.indexOfChild(sr)
+        if (ty > rowH / 2f && idx >= 0 && idx < container.childCount - 1) {
+            container.removeView(sr)
+            container.addView(sr, idx + 1)
+            sr.dragBase -= rowH
+            sr.translationY = ty - rowH
+        } else if (ty < -rowH / 2f && idx > 0) {
+            container.removeView(sr)
+            container.addView(sr, idx - 1)
+            sr.dragBase += rowH
+            sr.translationY = ty + rowH
+        }
+    }
+
+    /* ---------------- v5 modular dock ---------------- */
+
+    /** glyph, label, isSubScreen for a dock module id. */
+    private fun dockModuleMeta(id: String): Triple<String, String, Boolean> = when (id) {
+        "today" -> Triple(java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH).toString(), "Today", false)
+        "upcoming" -> Triple("▦", "Upcoming", false)
+        "calendar" -> Triple("▤", "Calendar", true)
+        "habits" -> Triple("🔥", "Habits", true)
+        "focus" -> Triple("◎", "Focus", true)
+        "stats" -> Triple("↗", "Stats", true)
+        "matrix" -> Triple("⊞", "Matrix", true)
+        "countdowns" -> Triple("⏳", "Countdowns", true)
+        "browse" -> Triple("☰", "Browse", false)
+        else -> Triple("•", id, true)
+    }
+
+    /** The floating pill dock (§2.8 + SHADOW-THREE §7 as amended):
+     *  up to 5 configured modules with the FIXED Quick Add "+" inserted
+     *  at the centre; active module gets the accent-tint-deep pill. */
+    private fun renderDock() {
+        val mods = Store.dockModules()
+        val cells = mutableListOf<String?>()
+        val insertAt = (mods.size + 1) / 2
+        mods.forEachIndexed { i, m ->
+            if (i == insertAt) cells.add(null)
+            cells.add(m)
+        }
+        if (insertAt >= mods.size) cells.add(null)
+        cells.forEach { m ->
+            if (m == null) {
+                val wrap = LinearLayout(this); wrap.orientation = LinearLayout.VERTICAL
+                wrap.gravity = Gravity.CENTER
+                wrap.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                val add = tv("+", 24f, 0xFFFFFFFF.toInt(), true)
+                add.gravity = Gravity.CENTER
+                add.background = ovalDrawable(V5.ACCENT)
+                add.layoutParams = LinearLayout.LayoutParams(dp(48f), dp(48f))
+                add.contentDescription = "Add task"
+                add.setOnClickListener { openQuickAdd(null) }
+                wrap.addView(add)
+                navBar.addView(wrap)
+            } else {
+                val (glyph, lbl, isSub) = dockModuleMeta(m)
+                val on = if (isSub) sub == m else (sub == null && view == m)
+                val cellL = LinearLayout(this); cellL.orientation = LinearLayout.VERTICAL
+                cellL.gravity = Gravity.CENTER_HORIZONTAL
+                cellL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                cellL.setPadding(dp(2f), dp(4f), dp(2f), dp(4f))
+                if (on) cellL.background = roundedRect(V5.ACCENT_TINT_DEEP, 999f)
+                val ic = tv(glyph, if (m == "today") 14f else 18f, if (on) V5.ACCENT_BRAND else V5.FAINT, m == "today")
+                ic.gravity = Gravity.CENTER
+                cellL.addView(ic)
+                val lb = tv(lbl, 10f, if (on) V5.TEXT else V5.FAINT)
+                lb.gravity = Gravity.CENTER
+                lb.layoutParams = lp(t = dp(2f))
+                cellL.addView(lb)
+                cellL.contentDescription = lbl
+                cellL.setOnClickListener {
+                    Sfx.nav()
+                    if (isSub) sub = m else { view = m; sub = null }
+                    render()
+                }
+                navBar.addView(cellL)
+            }
+        }
+    }
+
+    private fun dockSettingRow(labelText: String, actions: List<Triple<String, Boolean, () -> Unit>>): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(16f), dp(12f), dp(10f), dp(12f))
+        val t = tv(labelText, 15f)
+        t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        row.addView(t)
+        actions.forEach { (g, enabled, act) ->
+            val b = tv(g, 16f, if (enabled) V5.TEXT else V5.FAINT, true)
+            b.gravity = Gravity.CENTER
+            b.background = roundedRect(V5.POPUP, 999f)
+            b.layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { leftMargin = dp(6f) }
+            b.alpha = if (enabled) 1f else 0.4f
+            if (enabled) b.setOnClickListener { act() }
+            row.addView(b)
+        }
+        return row
+    }
+
+    /** Settings → Dock (SHADOW-THREE §7): reorder/remove the modules in
+     *  the dock, add from the catalogue. Applies immediately. */
+    private fun renderDockSettings() {
+        content.addView(tv("The dock holds up to 5 modules. Quick Add (+) is fixed in the centre, and Today can't be removed.", 13f, V5.MUTED))
+        content.addView(dayGroup("IN DOCK"))
+        val inDock = Store.dockModules()
+        val inRows = mutableListOf<View>()
+        inDock.forEachIndexed { i, m ->
+            val (_, lbl, _) = dockModuleMeta(m)
+            inRows.add(dockSettingRow(lbl, listOf(
+                Triple("↑", i > 0) {
+                    val cur = Store.dockModules().toMutableList()
+                    val tmp = cur[i]; cur[i] = cur[i - 1]; cur[i - 1] = tmp
+                    Store.setDockModules(cur); render()
+                },
+                Triple("↓", i < inDock.size - 1) {
+                    val cur = Store.dockModules().toMutableList()
+                    val tmp = cur[i]; cur[i] = cur[i + 1]; cur[i + 1] = tmp
+                    Store.setDockModules(cur); render()
+                },
+                Triple("−", m != "today") {
+                    val cur = Store.dockModules().toMutableList()
+                    cur.remove(m)
+                    Store.setDockModules(cur); render()
+                }
+            )))
+        }
+        content.addView(groupedMenuCard(inRows))
+        content.addView(dayGroup("MORE MODULES"))
+        val full = inDock.size >= 5
+        val moreRows = mutableListOf<View>()
+        Store.DOCK_MODULE_IDS.filter { it !in inDock }.forEach { m ->
+            val (_, lbl, _) = dockModuleMeta(m)
+            moreRows.add(dockSettingRow(lbl, listOf(
+                Triple("+", !full) {
+                    val cur = Store.dockModules().toMutableList()
+                    cur.add(m)
+                    Store.setDockModules(cur); render()
+                }
+            )))
+        }
+        if (moreRows.isNotEmpty()) content.addView(groupedMenuCard(moreRows))
+        if (full) {
+            val cap = tv("Dock is full — remove one first.", 12f, V5.MUTED)
+            cap.layoutParams = lp(t = dp(6f))
+            content.addView(cap)
+        }
+    }
+
+    /* ---------------- v5 Habits (SHADOW-THREE §1) ---------------- */
+
+    private val HF_COLORS = listOf(
+        "#d9a441", "#e44332", "#ff9f0a", "#3ecf6f", "#34c759", "#4a90d9",
+        "#bf5af2", "#ff4d7e", "#2fb457", "#00c8ff", "#ffd60a", "#9e9ea8")
+    private val HF_ICONS = listOf(
+        "drop", "sparkle", "droplets", "moon", "sun", "pill", "pause", "apple",
+        "book", "pan", "broom", "bed", "phone", "bookmark", "dumbbell", "steps",
+        "stretch", "wave", "lotus", "bike", "hands", "pen", "phone-off", "video",
+        "lotus-mind", "circle")
+
+    private fun habitGlyph(icon: String): String = when (icon) {
+        "drop" -> "💧"; "sparkle" -> "✨"; "droplets" -> "🚿"; "moon" -> "🌙"
+        "sun" -> "☀️"; "pill" -> "💊"; "pause" -> "⏸"; "apple" -> "🍎"
+        "book" -> "📖"; "pan" -> "🍳"; "broom" -> "🧹"; "bed" -> "🛏"
+        "phone" -> "📞"; "bookmark" -> "🔖"; "dumbbell" -> "🏋"; "steps" -> "🚶"
+        "stretch" -> "🤸"; "wave" -> "🏊"; "lotus", "lotus-mind" -> "🧘"
+        "bike" -> "🚴"; "hands" -> "🙏"; "pen" -> "✍"; "phone-off" -> "📵"
+        "video" -> "🎬"
+        else -> "●"
+    }
+
+    private fun habitColor(hex: String): Int =
+        try { android.graphics.Color.parseColor(hex) } catch (e: Exception) { 0xFFD9A441.toInt() }
+
+    private fun habitFromTemplate(tpl: HabitTemplate): HabitItem = HabitItem(
+        id = uid(), name = tpl.name, description = tpl.tagline, icon = tpl.icon,
+        color = tpl.color, kind = tpl.kind, libraryKey = tpl.key)
+
+    private fun renderHabits() {
+        val today = Dates.today()
+        val active = Store.state.habits.filter { !it.archived }
+        // Score pill + Library + new-habit actions.
+        val top = LinearLayout(this); top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        var denom = 0
+        active.forEach { hb ->
+            // Same existence bound HabitLogic.score applies, so the
+            // "New" gate never disagrees with the score it labels.
+            val startBound = HabitLogic.existenceStart(hb, Store.state.habitLogs, today)
+            for (b in 0 until 28) {
+                val d = Dates.addDays(today, -b)
+                if (d < startBound) continue
+                if (hb.freqType == "period" || HabitLogic.isDueOn(hb, d)) denom++
+            }
+        }
+        val pill = tv(if (denom == 0) "◔ New" else "◔ " + Store.habitScore().toString() + "%", 14f, V5.TEXT, true)
+        pill.background = roundedRect(V5.POPUP, 999f, V5.HAIRLINE)
+        pill.setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+        pill.contentDescription = "Habit Score"
+        top.addView(pill)
+        val sp = View(this)
+        sp.layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        top.addView(sp)
+        top.addView(ghostBtn("Library") { habitLibQuery = ""; showSheet(buildHabitLibrary()) })
+        val add = tv("+", 20f, V5.TEXT, true)
+        add.gravity = Gravity.CENTER
+        add.background = roundedRect(V5.POPUP, 999f)
+        add.layoutParams = LinearLayout.LayoutParams(dp(38f), dp(38f)).apply { leftMargin = dp(8f) }
+        add.contentDescription = "New habit"
+        add.setOnClickListener { startHabitForm(null) }
+        top.addView(add)
+        content.addView(top)
+        val cap = tv(
+            if (denom == 0) "Pick a habit from the Library or add your own — streaks start with one tick."
+            else "Habit Score · last 28 days",
+            12f, V5.MUTED)
+        cap.layoutParams = lp(t = dp(8f))
+        content.addView(cap)
+
+        renderMustsStrip()
+
+        val chips = LinearLayout(this); chips.orientation = LinearLayout.HORIZONTAL
+        chips.layoutParams = lp(t = dp(16f))
+        val c1 = chipBtn("All (" + active.size + ")", !habitFilterDue) { habitFilterDue = false; render() }
+        c1.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+        val c2 = chipBtn("Due (" + Store.habitDueCount(today) + ")", habitFilterDue) { habitFilterDue = true; render() }
+        chips.addView(c1); chips.addView(c2)
+        content.addView(chips)
+
+        val pills = v5DayPills(habitDaySel) { d -> habitDaySel = d; render() }
+        pills.layoutParams = lp(t = dp(14f))
+        content.addView(pills)
+        if (habitDaySel != today) {
+            val note = tv("Viewing " + fmtDayLong(habitDaySel) + " — history is read-only.", 12f, V5.MUTED)
+            note.layoutParams = lp(t = dp(8f))
+            content.addView(note)
+        }
+
+        var shown = active.sortedBy { it.order }
+        if (habitFilterDue) shown = shown.filter { HabitLogic.isDueOn(it, today) }
+        if (active.isEmpty()) {
+            content.addView(v5EmptyState("🔥", "No habits yet", "Add one from the Library or create your own."))
+            val libBtn = accentBtn("Browse the Library") { habitLibQuery = ""; showSheet(buildHabitLibrary()) }
+            libBtn.layoutParams = lp(t = dp(8f))
+            content.addView(libBtn)
+        } else if (shown.isEmpty()) {
+            val none = tv("Nothing due today.", 13f, V5.MUTED)
+            none.layoutParams = lp(t = dp(16f))
+            content.addView(none)
+        } else {
+            shown.forEach { hb ->
+                val c = v5HabitCard(hb, habitDaySel)
+                c.layoutParams = lp(t = dp(12f))
+                content.addView(c)
+            }
+        }
+
+        val arch = Store.state.habits.filter { it.archived }
+        if (arch.isNotEmpty()) {
+            content.addView(dayGroup("ARCHIVED"))
+            content.addView(groupedMenuCard(arch.map { hb ->
+                browseRow(habitGlyph(hb.icon), habitColor(hb.color), hb.name, null) { sub = "habit:" + hb.id; render() }
+            }))
+        }
+    }
+
+    /** The "Your Daily Musts" adopt strip (§1.8): shown only while any
+     *  of the four Musts is unadopted; one tap adopts with no sheet.
+     *  Reminder times start EMPTY — never invented. */
+    private fun renderMustsStrip() {
+        data class MustDef(val title: String, val key: String)
+        val defs = listOf(
+            MustDef("Meditation", "meditation"),
+            MustDef("Workout", "go-exercising"),
+            MustDef("Write 1 YouTube Script", "must:script"),
+            MustDef("Make 1 AI Video", "must:video")
+        )
+        val pending = defs.filter { d -> Store.state.habits.none { it.libraryKey == d.key } }
+        if (pending.isEmpty()) return
+        content.addView(sectionHeader("Your Daily Musts"))
+        pending.forEach { d ->
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.background = v5CardBg(18f)
+            row.setPadding(dp(14f), dp(12f), dp(12f), dp(12f))
+            row.layoutParams = lp(b = dp(10f))
+            val name = tv(d.title, 15f, V5.TEXT, true)
+            name.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(name)
+            val addB = tv("Add", 13f, 0xFFFFFFFF.toInt(), true)
+            addB.gravity = Gravity.CENTER
+            addB.background = roundedRect(V5.ACCENT, 999f)
+            addB.setPadding(dp(14f), dp(7f), dp(14f), dp(7f))
+            addB.setOnClickListener {
+                val hb = when (d.key) {
+                    "meditation" -> habitFromTemplate(HabitLibrary.byKey("meditation")!!)
+                    "go-exercising" -> habitFromTemplate(HabitLibrary.byKey("go-exercising")!!)
+                    "must:script" -> HabitItem(
+                        id = uid(), name = "Write 1 YouTube Script", icon = "pen", color = "#ff9f0a",
+                        tracking = "count", targetCount = 1, unit = "script", libraryKey = "must:script")
+                    else -> HabitItem(
+                        id = uid(), name = "Make 1 AI Video", icon = "video", color = "#bf5af2",
+                        tracking = "count", targetCount = 1, unit = "video", libraryKey = "must:video")
+                }
+                Store.addHabit(hb)
+                Sfx.add()
+                toast("Added to Habits")
+                render()
+            }
+            row.addView(addB)
+            content.addView(row)
+        }
+    }
+
+    /** The habit card (§1.3): its OWN component — header row, year
+     *  tick-grid body, tracking strip for count/checklist habits. */
+    private fun v5HabitCard(h: HabitItem, day: String): LinearLayout {
+        val today = Dates.today()
+        val editable = day == today
+        val color = habitColor(h.color)
+        val cardL = LinearLayout(this); cardL.orientation = LinearLayout.VERTICAL
+        cardL.background = v5CardBg()
+        cardL.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val well = iconWell(habitGlyph(h.icon), color, 40f, 19f)
+        well.background = roundedRect(V5.tint(color, 38), V5.R_ICONSQ)
+        row.addView(well)
+        val colT = LinearLayout(this); colT.orientation = LinearLayout.VERTICAL
+        colT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        colT.addView(tv(h.name, 16f, V5.TEXT, true))
+        val streak = HabitLogic.streak(h, Store.state.habitLogs, today)
+        val sub2 = tv((if (h.kind == "quit") "Clean: " else "Streak: ") + streak +
+            if (streak == 1) " day" else " days", 12f, V5.MUTED)
+        sub2.layoutParams = lp(t = dp(2f))
+        colT.addView(sub2)
+        row.addView(colT)
+        val det = tv("›", 20f, V5.MUTED, true)
+        det.gravity = Gravity.CENTER
+        det.background = roundedRect(V5.POPUP, 999f)
+        det.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f)).apply { rightMargin = dp(8f) }
+        det.contentDescription = "Habit details"
+        det.setOnClickListener { sub = "habit:" + h.id; render() }
+        row.addView(det)
+        if (h.tracking == "tick") {
+            val doneToday = HabitLogic.isDoneOn(h, Store.state.habitLogs, day)
+            val tick = tv("✓", 18f, if (doneToday) 0xFFFFFFFF.toInt() else color, true)
+            tick.gravity = Gravity.CENTER
+            tick.background = if (doneToday) ovalDrawable(color) else {
+                val g = android.graphics.drawable.GradientDrawable()
+                g.shape = android.graphics.drawable.GradientDrawable.OVAL
+                g.setColor(android.graphics.Color.TRANSPARENT)
+                g.setStroke(dp(2f), color)
+                g
+            }
+            tick.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
+            tick.contentDescription = if (h.kind == "quit") "Stayed clean today" else "Tick today"
+            if (editable) tick.setOnClickListener {
+                val nowDone = !HabitLogic.isDoneOn(h, Store.state.habitLogs, day)
+                Store.habitSetTick(h.id, day, nowDone)
+                if (nowDone) Sfx.complete() else Sfx.tick()
+                tick.animate().scaleX(0.85f).scaleY(0.85f).setDuration(75).withEndAction {
+                    tick.animate().scaleX(1f).scaleY(1f).setDuration(75).start()
+                    render()
+                }.start()
+            }
+            row.addView(tick)
+        }
+        cardL.addView(row)
+        val grid = YearGridView(this)
+        grid.cells = HabitLogic.gridCells(h, Store.state.habitLogs, today)
+        grid.colorHex = h.color
+        grid.layoutParams = lp(t = dp(12f))
+        cardL.addView(grid)
+        if (h.tracking == "count") {
+            val cnt = HabitLogic.logFor(h, Store.state.habitLogs, day)?.count ?: 0
+            val srow = LinearLayout(this); srow.orientation = LinearLayout.HORIZONTAL
+            srow.gravity = Gravity.CENTER_VERTICAL
+            srow.layoutParams = lp(t = dp(12f))
+            val ct = tv(cnt.toString() + " / " + h.targetCount + if (h.unit.isNotBlank()) " " + h.unit else "", 14f, V5.TEXT, true)
+            ct.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            srow.addView(ct)
+            if (editable) {
+                val minus = tv("−", 18f, V5.TEXT, true)
+                minus.gravity = Gravity.CENTER
+                minus.background = roundedRect(V5.POPUP, 999f)
+                minus.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f)).apply { rightMargin = dp(8f) }
+                minus.setOnClickListener { Store.habitAddCount(h.id, day, -1); Sfx.tick(); render() }
+                val plus = tv("+", 18f, V5.TEXT, true)
+                plus.gravity = Gravity.CENTER
+                plus.background = roundedRect(V5.POPUP, 999f)
+                plus.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f))
+                plus.setOnClickListener { Store.habitAddCount(h.id, day, 1); Sfx.tick(); render() }
+                srow.addView(minus); srow.addView(plus)
+            }
+            cardL.addView(srow)
+        }
+        if (h.tracking == "checklist") {
+            val log = HabitLogic.logFor(h, Store.state.habitLogs, day)
+            val doneItems = log?.doneItems ?: emptyList()
+            val doneN = h.checklist.count { it.id in doneItems }
+            val srow = LinearLayout(this); srow.orientation = LinearLayout.HORIZONTAL
+            srow.gravity = Gravity.CENTER_VERTICAL
+            srow.layoutParams = lp(t = dp(12f))
+            val ct = tv(doneN.toString() + " of " + h.checklist.size + " done", 14f, V5.TEXT, true)
+            ct.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            srow.addView(ct)
+            val exp = tv(if (hfExpandedHabit == h.id) "∧" else "›", 16f, V5.MUTED, true)
+            exp.gravity = Gravity.CENTER
+            exp.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f))
+            exp.contentDescription = "Expand checklist"
+            exp.setOnClickListener { hfExpandedHabit = if (hfExpandedHabit == h.id) null else h.id; render() }
+            srow.addView(exp)
+            cardL.addView(srow)
+            if (hfExpandedHabit == h.id) {
+                h.checklist.forEach { item ->
+                    val irow = LinearLayout(this); irow.orientation = LinearLayout.HORIZONTAL
+                    irow.gravity = Gravity.CENTER_VERTICAL
+                    irow.setPadding(0, dp(6f), 0, dp(6f))
+                    val isDone = item.id in doneItems
+                    val box = tv(if (isDone) "✓" else "", 11f, 0xFFFFFFFF.toInt(), true)
+                    box.gravity = Gravity.CENTER
+                    box.background = if (isDone) roundedRect(color, 6f)
+                        else roundedRect(android.graphics.Color.TRANSPARENT, 6f, V5.FAINT)
+                    box.layoutParams = LinearLayout.LayoutParams(dp(21f), dp(21f))
+                    if (editable) box.setOnClickListener { Store.habitToggleChecklist(h.id, day, item.id); Sfx.tick(); render() }
+                    irow.addView(box)
+                    val it2 = tv(item.title, 14f, if (isDone) V5.MUTED else V5.TEXT)
+                    it2.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(9f) }
+                    irow.addView(it2)
+                    cardL.addView(irow)
+                }
+            }
+        }
+        if (h.kind == "quit" && h.tracking == "tick") {
+            val q = tv("Stayed clean today", 11f, V5.FAINT)
+            q.layoutParams = lp(t = dp(8f))
+            cardL.addView(q)
+        }
+        return cardL
+    }
+
+    /** Habit Library sheet (§1.4/§1.5): grouped catalogue + search;
+     *  adopted entries jump to their detail instead of re-adopting. */
+    private fun buildHabitLibrary(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Habit Library", 17f, Glass.text(this@MainActivity), true))
+        val results = LinearLayout(this); results.orientation = LinearLayout.VERTICAL
+        fun fill() {
+            results.removeAllViews()
+            val q = habitLibQuery.trim().lowercase()
+            HabitLibrary.GROUPS.forEach { g ->
+                val items = HabitLibrary.byGroup(g).filter { q.isEmpty() || it.name.lowercase().contains(q) }
+                if (items.isEmpty()) return@forEach
+                val gh = tv(g.uppercase(), 11f, Glass.muted(this@MainActivity), true)
+                gh.layoutParams = lp(t = dp(14f), b = dp(6f))
+                results.addView(gh)
+                items.forEach { tpl ->
+                    val adoptedHabit = Store.state.habits.find { it.libraryKey == tpl.key }
+                    val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+                    row.gravity = Gravity.CENTER_VERTICAL
+                    row.setPadding(0, dp(8f), 0, dp(8f))
+                    val well = iconWell(habitGlyph(tpl.icon), habitColor(tpl.color), 36f, 17f)
+                    well.background = roundedRect(V5.tint(habitColor(tpl.color), 38), V5.R_ICONSQ)
+                    row.addView(well)
+                    val nc = LinearLayout(this); nc.orientation = LinearLayout.VERTICAL
+                    nc.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(10f) }
+                    val nameRow = LinearLayout(this); nameRow.orientation = LinearLayout.HORIZONTAL
+                    nameRow.addView(tv(tpl.name, 15f, Glass.text(this@MainActivity), true))
+                    if (tpl.popular) nameRow.addView(tv(" 🔥", 13f))
+                    nc.addView(nameRow)
+                    val tg = tv(tpl.tagline, 12f, Glass.muted(this@MainActivity))
+                    tg.maxLines = 1
+                    tg.ellipsize = android.text.TextUtils.TruncateAt.END
+                    nc.addView(tg)
+                    row.addView(nc)
+                    row.addView(tv(if (adoptedHabit != null) "Added ✓" else "›", 13f,
+                        if (adoptedHabit != null) V5.FAINT else Glass.muted(this@MainActivity), adoptedHabit != null))
+                    row.setOnClickListener {
+                        if (adoptedHabit != null) {
+                            closeSheet(); sub = "habit:" + adoptedHabit.id; render()
+                        } else {
+                            adoptTpl = tpl
+                            adoptDays.clear(); adoptDays.addAll(listOf(1, 2, 3, 4, 5, 6, 7))
+                            adoptTimes.clear()
+                            adoptPhraseIn = null
+                            pushSheet(buildHabitAdopt()) { buildHabitLibrary() }
+                        }
+                    }
+                    results.addView(row)
+                }
+            }
+            if (results.childCount == 0) {
+                results.addView(tv("No habits match.", 13f, Glass.muted(this@MainActivity)))
+            }
+        }
+        val search = input("Search habits…", habitLibQuery)
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: Editable?) { habitLibQuery = e?.toString() ?: ""; fill() }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        col.addView(search)
+        col.addView(results)
+        fill()
+        return col
+    }
+
+    /** The ONE-sheet adopt flow (§1.5): phrase, repeat day circles,
+     *  reminder time chips, "Add to My List". */
+    private fun buildHabitAdopt(): View {
+        val tpl = adoptTpl ?: return buildHabitLibrary()
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        val headRow = LinearLayout(this); headRow.orientation = LinearLayout.HORIZONTAL
+        headRow.gravity = Gravity.CENTER_VERTICAL
+        val well = iconWell(habitGlyph(tpl.icon), habitColor(tpl.color), 44f, 21f)
+        well.background = roundedRect(V5.tint(habitColor(tpl.color), 38), V5.R_ICONSQ)
+        headRow.addView(well)
+        val hc = LinearLayout(this); hc.orientation = LinearLayout.VERTICAL
+        hc.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        hc.addView(tv(tpl.name, 17f, Glass.text(this@MainActivity), true))
+        val tg = tv(tpl.tagline, 13f, Glass.muted(this@MainActivity))
+        tg.layoutParams = lp(t = dp(2f))
+        hc.addView(tg)
+        headRow.addView(hc)
+        col.addView(headRow)
+        col.addView(label("Reminder phrase"))
+        val phrase = input("Reminder phrase", tpl.name)
+        adoptPhraseIn = phrase
+        col.addView(phrase)
+        col.addView(label("Repeat on"))
+        val dayRow = LinearLayout(this); dayRow.orientation = LinearLayout.HORIZONTAL
+        // Sunday first (S M T W T F S), as in the reference app; values
+        // are HabitLogic weekdays (1=Mon..7=Sun).
+        listOf(7 to "S", 1 to "M", 2 to "T", 3 to "W", 4 to "T", 5 to "F", 6 to "S").forEach { (dow, l) ->
+            val on = dow in adoptDays
+            val c = tv(l, 13f, if (on) 0xFFFFFFFF.toInt() else Glass.text(this@MainActivity), true)
+            c.gravity = Gravity.CENTER
+            c.background = if (on) ovalDrawable(V5.ACCENT) else ovalDrawable(Todoist.POPUP)
+            c.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f)).apply { rightMargin = dp(6f) }
+            c.setOnClickListener {
+                if (dow in adoptDays) adoptDays.remove(dow) else adoptDays.add(dow)
+                showSheet(buildHabitAdopt())
+            }
+            dayRow.addView(c)
+        }
+        col.addView(dayRow)
+        col.addView(label("Reminder at"))
+        val timesRow = LinearLayout(this); timesRow.orientation = LinearLayout.HORIZONTAL
+        adoptTimes.sorted().forEach { tm ->
+            val ch = tv(tm + "  ✕", 13f)
+            ch.background = Glass.sheetChip(this, true)
+            ch.setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            ch.setOnClickListener { adoptTimes.remove(tm); showSheet(buildHabitAdopt()) }
+            timesRow.addView(ch)
+        }
+        val addT = tv("＋ Add time", 13f)
+        addT.background = Glass.sheetChip(this, false)
+        addT.setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        addT.setOnClickListener {
+            promptHabitTime { tm ->
+                if (tm !in adoptTimes) adoptTimes.add(tm)
+                showSheet(buildHabitAdopt())
+            }
+        }
+        timesRow.addView(addT)
+        col.addView(timesRow)
+        val add = accentBtn("Add to My List") {
+            if (adoptDays.isEmpty()) { toast("Pick at least one day"); return@accentBtn }
+            val h = HabitItem(
+                id = uid(), name = tpl.name, description = tpl.tagline, icon = tpl.icon,
+                color = tpl.color, kind = tpl.kind,
+                freqType = if (adoptDays.size == 7) "daily" else "weekdays",
+                freqDays = adoptDays.sorted().toMutableList(),
+                reminderPhrase = adoptPhraseIn?.text?.toString()?.trim()?.ifEmpty { tpl.name } ?: tpl.name,
+                reminderTimes = adoptTimes.sorted().toMutableList(),
+                libraryKey = tpl.key)
+            Store.addHabit(h)
+            Sfx.add()
+            closeSheet()
+            sub = "habits"; habitFilterDue = false; render()
+            toast("Habit added")
+        }
+        add.layoutParams = lp(t = dp(16f))
+        col.addView(add)
+        val back = ghostBtn("← Back") { if (!popSheet()) showSheet(buildHabitLibrary()) }
+        back.layoutParams = lp(t = dp(8f))
+        col.addView(back)
+        return col
+    }
+
+    private fun promptHabitTime(cb: (String) -> Unit) {
+        val e = EditText(this)
+        e.setSingleLine(true)
+        e.hint = "HH:mm — e.g. 07:30"
+        AlertDialog.Builder(this).setTitle("Reminder time").setView(e)
+            .setPositiveButton("Add") { _, _ ->
+                val v = e.text.toString().trim()
+                if (Regex("""^([01]?\d|2[0-3]):[0-5]\d$""").matches(v)) {
+                    val p = v.split(":")
+                    cb(p[0].padStart(2, '0') + ":" + p[1])
+                } else toast("Time must be HH:mm")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /* ---------------- custom habit form (§1.6) ---------------- */
+
+    private fun startHabitForm(editId: String?) {
+        val h = editId?.let { Store.habitById(it) }
+        habitFormId = editId
+        hfName = h?.name ?: ""
+        hfDesc = h?.description ?: ""
+        hfColor = h?.color ?: "#d9a441"
+        hfIcon = h?.icon ?: "circle"
+        hfKind = h?.kind ?: "build"
+        hfFreqType = h?.freqType ?: "daily"
+        hfDays.clear(); hfMonthDays.clear()
+        if (h != null) {
+            if (h.freqType == "monthdays") hfMonthDays.addAll(h.freqDays) else hfDays.addAll(h.freqDays)
+        }
+        hfFreqCount = h?.freqCount ?: 3
+        hfFreqPeriod = h?.freqPeriodDays ?: 7
+        hfTracking = h?.tracking ?: "tick"
+        hfTarget = h?.targetCount ?: 1
+        hfUnit = h?.unit ?: ""
+        hfChecklist.clear()
+        hfChecklist.addAll(h?.checklist?.map { it.title } ?: emptyList())
+        hfPhrase = h?.reminderPhrase ?: ""
+        hfTimes.clear()
+        hfTimes.addAll(h?.reminderTimes ?: emptyList())
+        sub = "habitform"
+        render()
+    }
+
+    /** Text input that mirrors every keystroke into a field, so the
+     *  form's chip/stepper re-renders never lose typed text. */
+    private fun watchedInput(hint: String, value: String, multi: Boolean = false, onChange: (String) -> Unit): EditText {
+        val e = input(hint, value, multi)
+        e.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { onChange(s?.toString() ?: "") }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        return e
+    }
+
+    private fun stepperRow(labelText: String, value: Int, onChange: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(0, dp(6f), 0, dp(6f))
+        val l = tv(labelText, 15f)
+        l.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        row.addView(l)
+        val minus = tv("−", 17f, V5.TEXT, true)
+        minus.gravity = Gravity.CENTER
+        minus.background = roundedRect(V5.POPUP, 999f)
+        minus.layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { rightMargin = dp(8f) }
+        minus.setOnClickListener { onChange(value - 1) }
+        row.addView(minus)
+        val valT = tv(value.toString(), 16f, V5.TEXT, true)
+        valT.gravity = Gravity.CENTER
+        valT.layoutParams = LinearLayout.LayoutParams(dp(30f), -2)
+        row.addView(valT)
+        val plus = tv("+", 17f, V5.TEXT, true)
+        plus.gravity = Gravity.CENTER
+        plus.background = roundedRect(V5.POPUP, 999f)
+        plus.layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { leftMargin = dp(8f) }
+        plus.setOnClickListener { onChange(value + 1) }
+        row.addView(plus)
+        return row
+    }
+
+    private fun renderHabitForm() {
+        val saveTop = accentBtn("✓ Save habit") { saveHabitForm() }
+        content.addView(saveTop)
+        content.addView(label("Name"))
+        content.addView(watchedInput("Eg. Wake Up Early, Quit Drinking, etc.", hfName) { hfName = it })
+        content.addView(label("Description"))
+        content.addView(watchedInput("What is it about? (optional)", hfDesc, multi = true) { hfDesc = it })
+        content.addView(label("Colour"))
+        val crow = LinearLayout(this); crow.orientation = LinearLayout.HORIZONTAL
+        HF_COLORS.forEach { hex ->
+            val sw = tv(if (hex == hfColor) "✓" else "", 13f, 0xFFFFFFFF.toInt(), true)
+            sw.gravity = Gravity.CENTER
+            sw.background = ovalDrawable(habitColor(hex))
+            sw.layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { rightMargin = dp(7f) }
+            sw.setOnClickListener { hfColor = hex; render() }
+            crow.addView(sw)
+        }
+        val crowScroll = HorizontalScrollView(this)
+        crowScroll.isHorizontalScrollBarEnabled = false
+        crowScroll.addView(crow)
+        content.addView(crowScroll)
+        content.addView(label("Icon"))
+        HF_ICONS.chunked(6).forEach { rowIcons ->
+            val irow = LinearLayout(this); irow.orientation = LinearLayout.HORIZONTAL
+            irow.layoutParams = lp(b = dp(8f))
+            rowIcons.forEach { icon ->
+                val on = icon == hfIcon
+                val cell = tv(habitGlyph(icon), 18f)
+                cell.gravity = Gravity.CENTER
+                cell.background = if (on) roundedRect(V5.tint(habitColor(hfColor), 60), V5.R_ICONSQ, habitColor(hfColor))
+                    else roundedRect(V5.POPUP, V5.R_ICONSQ)
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(44f), 1f).apply { rightMargin = dp(8f) }
+                cell.setOnClickListener { hfIcon = icon; render() }
+                irow.addView(cell)
+            }
+            repeat(6 - rowIcons.size) {
+                val sp = View(this)
+                sp.layoutParams = LinearLayout.LayoutParams(0, dp(44f), 1f).apply { rightMargin = dp(8f) }
+                irow.addView(sp)
+            }
+            content.addView(irow)
+        }
+        content.addView(label("Type"))
+        val typeRow = LinearLayout(this); typeRow.orientation = LinearLayout.HORIZONTAL
+        val bBuild = chipBtn("Build", hfKind == "build") { hfKind = "build"; render() }
+        bBuild.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+        val bQuit = chipBtn("Quit", hfKind == "quit") { hfKind = "quit"; render() }
+        typeRow.addView(bBuild); typeRow.addView(bQuit)
+        content.addView(typeRow)
+        val typeCap = tv(
+            if (hfKind == "quit") "Quit — something to stop. The tick means “stayed clean”."
+            else "Build — something to do every time it's due.",
+            12f, V5.MUTED)
+        typeCap.layoutParams = lp(t = dp(4f))
+        content.addView(typeCap)
+        content.addView(label("Frequency"))
+        listOf(
+            "daily" to "Everyday", "weekdays" to "Specific days of week",
+            "monthdays" to "Specific days of month", "period" to "Some days per period"
+        ).forEach { (v, l) ->
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(0, dp(7f), 0, dp(7f))
+            val radio = tv(if (hfFreqType == v) "◉" else "○", 16f, if (hfFreqType == v) V5.ACCENT_BRAND else V5.MUTED)
+            radio.layoutParams = LinearLayout.LayoutParams(dp(28f), -2)
+            row.addView(radio)
+            row.addView(tv(l, 15f))
+            row.setOnClickListener { hfFreqType = v; render() }
+            content.addView(row)
+        }
+        when (hfFreqType) {
+            "weekdays" -> {
+                val dayRow = LinearLayout(this); dayRow.orientation = LinearLayout.HORIZONTAL
+                dayRow.layoutParams = lp(t = dp(6f))
+                listOf(1 to "M", 2 to "T", 3 to "W", 4 to "T", 5 to "F", 6 to "S", 7 to "S").forEach { (dow, l) ->
+                    val on = dow in hfDays
+                    val c = tv(l, 13f, if (on) 0xFFFFFFFF.toInt() else V5.TEXT, true)
+                    c.gravity = Gravity.CENTER
+                    c.background = if (on) ovalDrawable(V5.ACCENT) else ovalDrawable(V5.POPUP)
+                    c.layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f)).apply { rightMargin = dp(6f) }
+                    c.setOnClickListener {
+                        if (dow in hfDays) hfDays.remove(dow) else hfDays.add(dow)
+                        render()
+                    }
+                    dayRow.addView(c)
+                }
+                content.addView(dayRow)
+            }
+            "monthdays" -> {
+                (1..31).chunked(7).forEach { chunk ->
+                    val mrow = LinearLayout(this); mrow.orientation = LinearLayout.HORIZONTAL
+                    mrow.layoutParams = lp(t = dp(6f))
+                    chunk.forEach { d ->
+                        val c = chipBtn(d.toString(), d in hfMonthDays) {
+                            if (d in hfMonthDays) hfMonthDays.remove(d) else hfMonthDays.add(d)
+                            render()
+                        }
+                        c.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+                        mrow.addView(c)
+                    }
+                    content.addView(mrow)
+                }
+            }
+            "period" -> {
+                content.addView(stepperRow("Days needed", hfFreqCount) { hfFreqCount = it.coerceIn(1, 31); render() })
+                content.addView(stepperRow("Per days", hfFreqPeriod) { hfFreqPeriod = it.coerceIn(2, 31); render() })
+            }
+        }
+        content.addView(label("Tracking"))
+        val trRow = LinearLayout(this); trRow.orientation = LinearLayout.HORIZONTAL
+        listOf("tick" to "Tick", "count" to "Count", "checklist" to "Checklist").forEach { (v, l) ->
+            val ch = chipBtn(l, hfTracking == v) { hfTracking = v; render() }
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            trRow.addView(ch)
+        }
+        content.addView(trRow)
+        val trCap = tv(when (hfTracking) {
+            "count" -> "Count up to a daily target."
+            "checklist" -> "The day is done when every item is ticked."
+            else -> "One tap marks the day done."
+        }, 12f, V5.MUTED)
+        trCap.layoutParams = lp(t = dp(4f))
+        content.addView(trCap)
+        when (hfTracking) {
+            "count" -> {
+                content.addView(stepperRow("Daily target", hfTarget) { hfTarget = it.coerceIn(1, 999); render() })
+                content.addView(label("Unit"))
+                content.addView(watchedInput("e.g. glasses, pages, minutes", hfUnit) { hfUnit = it })
+            }
+            "checklist" -> {
+                hfChecklist.forEachIndexed { i, item ->
+                    val r = LinearLayout(this); r.orientation = LinearLayout.HORIZONTAL
+                    r.gravity = Gravity.CENTER_VERTICAL
+                    val inp = watchedInput("Checklist item", item) { hfChecklist[i] = it }
+                    inp.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                    r.addView(inp)
+                    val del = tv("✕", 14f, V5.MUTED)
+                    del.setPadding(dp(8f), dp(8f), dp(4f), dp(8f))
+                    del.contentDescription = "Remove item"
+                    del.setOnClickListener { hfChecklist.removeAt(i); render() }
+                    r.addView(del)
+                    content.addView(r)
+                }
+                val addItem = ghostBtn("＋ Add item") { hfChecklist.add(""); render() }
+                addItem.layoutParams = lp(t = dp(4f))
+                content.addView(addItem)
+            }
+        }
+        content.addView(label("Reminders"))
+        content.addView(watchedInput("Reminder phrase", hfPhrase) { hfPhrase = it })
+        val timesRow = LinearLayout(this); timesRow.orientation = LinearLayout.HORIZONTAL
+        hfTimes.sorted().forEach { tm ->
+            val ch = tv(tm + "  ✕", 13f)
+            ch.background = Glass.sheetChip(this, true)
+            ch.setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            ch.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(6f) }
+            ch.setOnClickListener { hfTimes.remove(tm); render() }
+            timesRow.addView(ch)
+        }
+        val addT = tv("＋ Add time", 13f)
+        addT.background = Glass.sheetChip(this, false)
+        addT.setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        addT.setOnClickListener {
+            promptHabitTime { tm -> if (tm !in hfTimes) hfTimes.add(tm); render() }
+        }
+        timesRow.addView(addT)
+        content.addView(timesRow)
+        val saveBottom = accentBtn("✓ Save habit") { saveHabitForm() }
+        saveBottom.layoutParams = lp(t = dp(18f))
+        content.addView(saveBottom)
+        val editId = habitFormId
+        if (editId != null) {
+            val cancel = ghostBtn("Cancel") { sub = "habit:" + editId; render() }
+            cancel.layoutParams = lp(t = dp(8f))
+            content.addView(cancel)
+        }
+    }
+
+    private fun saveHabitForm() {
+        if (hfName.isBlank()) { toast("Give the habit a name"); return }
+        if (hfFreqType == "weekdays" && hfDays.isEmpty()) { toast("Pick at least one weekday"); return }
+        if (hfFreqType == "monthdays" && hfMonthDays.isEmpty()) { toast("Pick at least one day of the month"); return }
+        if (hfTracking == "checklist" && hfChecklist.none { it.isNotBlank() }) { toast("Add at least one checklist item"); return }
+        if (hfTracking == "count" && hfTarget < 1) { toast("Target must be at least 1"); return }
+        val freqDays = when (hfFreqType) {
+            "weekdays" -> hfDays.sorted().toMutableList()
+            "monthdays" -> hfMonthDays.sorted().toMutableList()
+            else -> mutableListOf()
+        }
+        val items = hfChecklist.filter { it.isNotBlank() }.map { it.trim() }
+        val existing = habitFormId?.let { Store.habitById(it) }
+        if (existing != null) {
+            existing.name = hfName.trim()
+            existing.description = hfDesc.trim()
+            existing.icon = hfIcon
+            existing.color = hfColor
+            existing.kind = hfKind
+            existing.freqType = hfFreqType
+            existing.freqDays = freqDays
+            existing.freqCount = hfFreqCount
+            existing.freqPeriodDays = hfFreqPeriod
+            existing.tracking = hfTracking
+            existing.targetCount = hfTarget
+            existing.unit = hfUnit.trim()
+            // Preserve checklist item ids by title so existing day logs
+            // (which reference item ids) stay valid across the edit.
+            val oldByTitle = existing.checklist.associateBy { it.title }
+            existing.checklist = items.map { title -> oldByTitle[title] ?: Subtask(uid(), title, false) }.toMutableList()
+            existing.reminderPhrase = hfPhrase.trim()
+            existing.reminderTimes = hfTimes.sorted().toMutableList()
+            Store.updateHabit(existing)
+            sub = "habit:" + existing.id
+        } else {
+            val h = HabitItem(
+                id = uid(), name = hfName.trim(), description = hfDesc.trim(), icon = hfIcon,
+                color = hfColor, kind = hfKind, freqType = hfFreqType, freqDays = freqDays,
+                freqCount = hfFreqCount, freqPeriodDays = hfFreqPeriod, tracking = hfTracking,
+                targetCount = hfTarget, unit = hfUnit.trim(),
+                checklist = items.map { Subtask(uid(), it, false) }.toMutableList(),
+                reminderPhrase = hfPhrase.trim(), reminderTimes = hfTimes.sorted().toMutableList())
+            Store.addHabit(h)
+            sub = "habits"
+        }
+        Sfx.add()
+        render()
+        toast("Habit saved")
+    }
+
+    /* ---------------- habit detail (§1.3) ---------------- */
+
+    private fun habitFreqText(h: HabitItem): String = when (h.freqType) {
+        "daily" -> "Every day"
+        "weekdays" -> {
+            val names = arrayOf("", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            h.freqDays.sorted().joinToString(" ") { names.getOrElse(it) { "" } }
+        }
+        "monthdays" -> "Monthly on " + h.freqDays.sorted().joinToString(", ")
+        "period" -> h.freqCount.toString() + " days per " + h.freqPeriodDays + " days"
+        else -> h.freqType
+    }
+
+    private fun habitTrackingText(h: HabitItem): String = when (h.tracking) {
+        "count" -> "Count · " + h.targetCount + if (h.unit.isNotBlank()) " " + h.unit else ""
+        "checklist" -> "Checklist · " + h.checklist.size + " items"
+        else -> "Tick"
+    }
+
+    private fun renderHabitDetail(id: String) {
+        val h = Store.habitById(id)
+        if (h == null) { content.addView(emptyView("🔥", "Habit not found.")); return }
+        val today = Dates.today()
+        val color = habitColor(h.color)
+        val logs = Store.state.habitLogs
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val well = iconWell(habitGlyph(h.icon), color, 48f, 23f)
+        well.background = roundedRect(V5.tint(color, 38), V5.R_ICONSQ)
+        head.addView(well)
+        val hc = LinearLayout(this); hc.orientation = LinearLayout.VERTICAL
+        hc.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12f) }
+        hc.addView(tv(h.name, 20f, V5.TEXT, true))
+        val meta = tv(habitFreqText(h) + " · " + habitTrackingText(h) + if (h.archived) " · Archived" else "", 13f, V5.MUTED)
+        meta.layoutParams = lp(t = dp(2f))
+        hc.addView(meta)
+        if (h.description.isNotBlank()) {
+            val d = tv(h.description, 12f, V5.FAINT)
+            d.layoutParams = lp(t = dp(2f))
+            hc.addView(d)
+        }
+        head.addView(hc)
+        content.addView(head)
+
+        val gc = LinearLayout(this); gc.orientation = LinearLayout.VERTICAL
+        gc.background = v5CardBg()
+        gc.setPadding(dp(16f), dp(16f), dp(16f), dp(16f))
+        gc.layoutParams = lp(t = dp(16f))
+        val grid = YearGridView(this)
+        grid.cells = HabitLogic.gridCells(h, logs, today)
+        grid.colorHex = h.color
+        gc.addView(grid)
+        content.addView(gc)
+
+        val startedCal = java.util.Calendar.getInstance()
+        startedCal.timeInMillis = h.createdAt
+        val statsRow = LinearLayout(this); statsRow.orientation = LinearLayout.HORIZONTAL
+        statsRow.layoutParams = lp(t = dp(12f))
+        listOf(
+            HabitLogic.streak(h, logs, today).toString() to "Current streak",
+            HabitLogic.bestStreak(h, logs, today).toString() to "Best streak",
+            logs.count { it.habitId == h.id && HabitLogic.resolveDone(h, it) }.toString() to "Days done",
+            fmtMonDay(Dates.dstr(startedCal)) to "Started"
+        ).forEachIndexed { i, (v, l) ->
+            val c = LinearLayout(this); c.orientation = LinearLayout.VERTICAL
+            c.background = v5CardBg(V5.R_TILE)
+            c.setPadding(dp(12f), dp(12f), dp(12f), dp(12f))
+            c.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { if (i > 0) leftMargin = dp(10f) }
+            c.addView(tv(v, 18f, V5.TEXT, true))
+            val lt = tv(l, 10f, V5.MUTED)
+            lt.layoutParams = lp(t = dp(2f))
+            c.addView(lt)
+            statsRow.addView(c)
+        }
+        content.addView(statsRow)
+
+        content.addView(sectionHeader("Milestones"))
+        val mc = LinearLayout(this); mc.orientation = LinearLayout.VERTICAL
+        mc.background = v5CardBg()
+        mc.setPadding(dp(16f), dp(8f), dp(16f), dp(8f))
+        HabitLogic.milestones(h, logs, today).forEach { m ->
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(0, dp(8f), 0, dp(8f))
+            val node = tv(when {
+                m.label == "Started" -> "🚩"
+                m.label.contains("streak") -> "🔥"
+                else -> "✓"
+            }, 13f)
+            node.gravity = Gravity.CENTER
+            node.background = ovalDrawable(V5.ACCENT_TINT)
+            node.layoutParams = LinearLayout.LayoutParams(dp(26f), dp(26f)).apply { rightMargin = dp(10f) }
+            row.addView(node)
+            val ml = tv(m.label, 14f, V5.TEXT, true)
+            ml.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(ml)
+            row.addView(tv(fmtMonDay(m.date), 12f, V5.MUTED))
+            mc.addView(row)
+        }
+        content.addView(mc)
+
+        if (h.reminderTimes.isNotEmpty()) {
+            val ri = tv("🔔 " + h.reminderTimes.joinToString(", ") +
+                if (h.reminderPhrase.isNotBlank()) " · \"" + h.reminderPhrase + "\"" else "", 13f, V5.MUTED)
+            ri.layoutParams = lp(t = dp(12f))
+            content.addView(ri)
+        }
+        val edit = accentBtn("Edit habit") { startHabitForm(h.id) }
+        edit.layoutParams = lp(t = dp(16f))
+        content.addView(edit)
+        val arch = ghostBtn(if (h.archived) "Unarchive" else "Archive") {
+            Store.archiveHabit(h.id, !h.archived)
+            toast(if (h.archived) "Habit unarchived" else "Habit archived")
+            sub = "habits"; render()
+        }
+        arch.layoutParams = lp(t = dp(8f))
+        content.addView(arch)
+        if (isV5()) {
+            // §2.9 row anatomy for the destructive action: glyph in a
+            // tinted icon well + label, not a bare red text line.
+            val delRow = LinearLayout(this); delRow.orientation = LinearLayout.HORIZONTAL
+            delRow.gravity = Gravity.CENTER_VERTICAL
+            delRow.layoutParams = lp(t = dp(14f))
+            delRow.addView(iconWell("🗑", V5.P1, 32f, 15f))
+            val dt = tv("Delete habit", 15f, Glass.overdue(this@MainActivity))
+            dt.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12f) }
+            delRow.addView(dt)
+            delRow.setOnClickListener {
+                val removed = Store.deleteHabit(h.id)
+                sub = "habits"; render()
+                if (removed != null) showHabitUndo(removed.first, removed.second)
+            }
+            content.addView(delRow)
+        } else {
+            val del = tv("Delete habit", 15f, Glass.overdue(this@MainActivity))
+            del.gravity = Gravity.CENTER
+            del.setPadding(dp(12f), dp(14f), dp(12f), dp(6f))
+            del.setOnClickListener {
+                val removed = Store.deleteHabit(h.id)
+                sub = "habits"; render()
+                if (removed != null) showHabitUndo(removed.first, removed.second)
+            }
+            content.addView(del)
+        }
+    }
+
+    private fun showHabitUndo(h: HabitItem, logs: List<HabitLog>) {
+        undoBar.removeAllViews()
+        val lbl = tv("Deleted habit \"" + h.name + "\"", 13f)
+        lbl.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
+        undoBar.addView(lbl)
+        val btn = tv("UNDO", 15f, Glass.gold(this@MainActivity), true)
+        btn.setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+        btn.setOnClickListener {
+            Store.restoreHabit(h, logs)
+            undoBar.visibility = View.GONE
+            render(); toast("Restored ↩️")
+        }
+        undoBar.addView(btn)
+        undoHide?.let { handler.removeCallbacks(it) }
+        undoHide = Runnable { undoBar.visibility = View.GONE }
+        undoBar.visibility = View.VISIBLE
+        handler.postDelayed(undoHide!!, 5000)
+    }
+
+    /* ---------------- v5 Eisenhower Matrix (SHADOW-THREE §5) -------- */
+
+    /** Important = priority ≤ 2. Urgent = due today/tomorrow, or a
+     *  deadline of today or earlier. */
+    private fun quadrantOf(t: TaskItem): Int {
+        val today = Dates.today()
+        val imp = t.priority <= 2
+        val urg = (t.dueDate != null && t.dueDate!! <= Dates.addDays(today, 1)) ||
+            (t.deadline != null && t.deadline!! <= today)
+        return when {
+            imp && urg -> 1
+            imp -> 2
+            urg -> 3
+            else -> 4
+        }
+    }
+
+    private fun renderMatrix() {
+        val quads = listOf(
+            Triple(1, "Do Now", "Urgent · Important"),
+            Triple(2, "Schedule", "Important · Not urgent"),
+            Triple(3, "Batch", "Urgent · Not important"),
+            Triple(4, "Later", "Not urgent · Not important")
+        )
+        var rowIdx = 0
+        while (rowIdx < 4) {
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.layoutParams = lp(t = if (rowIdx == 0) 0 else dp(12f))
+            for (k in 0..1) {
+                val (q, qname, qsub) = quads[rowIdx + k]
+                val tasks = Store.sortTasks(Store.state.tasks.filter { quadrantOf(it) == q })
+                val cardL = LinearLayout(this); cardL.orientation = LinearLayout.VERTICAL
+                cardL.background = v5CardBg()
+                cardL.setPadding(dp(12f), dp(12f), dp(12f), dp(12f))
+                cardL.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { if (k == 1) leftMargin = dp(12f) }
+                cardL.addView(tv(qname, 15f, if (q == 1) V5.ACCENT_BRAND else V5.TEXT, true))
+                val hs = tv(qsub + " · " + tasks.size, 11f, V5.FAINT)
+                hs.layoutParams = lp(t = dp(2f), b = dp(6f))
+                cardL.addView(hs)
+                if (tasks.isEmpty()) {
+                    cardL.addView(tv("Nothing here.", 12f, V5.FAINT))
+                } else {
+                    tasks.take(5).forEach { t ->
+                        val r = LinearLayout(this); r.orientation = LinearLayout.HORIZONTAL
+                        r.gravity = Gravity.CENTER_VERTICAL
+                        r.setPadding(0, dp(5f), 0, dp(5f))
+                        val ck = tv("", 10f, 0xFFFFFFFF.toInt(), true)
+                        ck.gravity = Gravity.CENTER
+                        ck.background = Glass.checkCircle(this, t.priority, false)
+                        ck.layoutParams = LinearLayout.LayoutParams(dp(18f), dp(18f))
+                        ck.contentDescription = "Complete task"
+                        ck.setOnClickListener {
+                            val msg = Store.completeTask(t.id)
+                            if (msg.isNotEmpty()) toast(msg)
+                            render()
+                        }
+                        r.addView(ck)
+                        val tt = tv(t.title, 13f, V5.TEXT)
+                        tt.maxLines = 1
+                        tt.ellipsize = android.text.TextUtils.TruncateAt.END
+                        tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(8f) }
+                        r.addView(tt)
+                        r.setOnClickListener { openEditor(t.id) }
+                        cardL.addView(r)
+                    }
+                    if (tasks.size > 5) {
+                        val more = tv("+" + (tasks.size - 5) + " more", 12f, V5.ACCENT_BRAND, true)
+                        more.setPadding(0, dp(6f), 0, 0)
+                        more.setOnClickListener { matrixQuadSel = q; sub = "matrixlist"; render() }
+                        cardL.addView(more)
+                    }
+                }
+                rowL.addView(cardL)
+            }
+            content.addView(rowL)
+            rowIdx += 2
+        }
+    }
+
+    /* ---------------- v5 Countdowns (SHADOW-THREE §6) ---------------- */
+
+    private fun fmtDateWords(s: String): String = try {
+        val months = arrayOf("January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December")
+        val c = Dates.parse(s)
+        c.get(java.util.Calendar.DAY_OF_MONTH).toString() + " " +
+            months[c.get(java.util.Calendar.MONTH)] + " " + c.get(java.util.Calendar.YEAR)
+    } catch (e: Exception) { s }
+
+    private fun renderCountdowns() {
+        val today = Dates.today()
+        val add = accentBtn("＋ Add a countdown") {
+            cdColor = "#d9a441"; cdDate = Dates.today(); showSheet(buildCountdownSheet(null))
+        }
+        content.addView(add)
+        if (Store.state.countdowns.isEmpty()) {
+            // No seeds, no pre-filled dates, ever (§6).
+            content.addView(v5EmptyState("⏳", "Count down to what matters.", "Deadlines, launches, big days — add your first countdown."))
+            return
+        }
+        val future = Store.state.countdowns.filter { it.targetDate >= today }.sortedBy { it.targetDate }
+        val past = Store.state.countdowns.filter { it.targetDate < today }.sortedByDescending { it.targetDate }
+        (future + past).forEach { c ->
+            val days = Dates.daysBetween(today, c.targetDate)
+            val cardL = LinearLayout(this); cardL.orientation = LinearLayout.HORIZONTAL
+            cardL.gravity = Gravity.CENTER_VERTICAL
+            cardL.background = v5CardBg()
+            cardL.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            cardL.layoutParams = lp(t = dp(12f))
+            val bar = View(this)
+            bar.background = roundedRect(habitColor(c.color), 2f)
+            bar.layoutParams = LinearLayout.LayoutParams(dp(4f), -1).apply { rightMargin = dp(12f) }
+            cardL.addView(bar)
+            val colT = LinearLayout(this); colT.orientation = LinearLayout.VERTICAL
+            colT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            colT.addView(tv(c.title, 16f, if (days < 0) V5.MUTED else V5.TEXT, true))
+            val dw = tv(fmtDateWords(c.targetDate), 12f, V5.MUTED)
+            dw.layoutParams = lp(t = dp(2f))
+            colT.addView(dw)
+            cardL.addView(colT)
+            val numCol = LinearLayout(this); numCol.orientation = LinearLayout.VERTICAL
+            numCol.gravity = Gravity.END
+            val num = tv(Math.abs(days).toString(), 30f, if (days < 0) V5.MUTED else V5.TEXT, true)
+            num.gravity = Gravity.END
+            numCol.addView(num)
+            val capT = tv(when {
+                days > 0 -> "days left"
+                days == 0 -> "Today!"
+                else -> "days since"
+            }, 11f, V5.MUTED)
+            capT.gravity = Gravity.END
+            numCol.addView(capT)
+            cardL.addView(numCol)
+            cardL.setOnClickListener { cdColor = c.color; cdDate = c.targetDate; showSheet(buildCountdownSheet(c)) }
+            content.addView(cardL)
+        }
+    }
+
+    private fun buildCountdownSheet(existing: CountdownItem?): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(if (existing == null) "New countdown" else "Edit countdown", 17f, Glass.text(this@MainActivity), true))
+        col.addView(label("Title"))
+        val titleIn = input("e.g. Channel launch", existing?.title ?: "")
+        col.addView(titleIn)
+        col.addView(label("Target date"))
+        // The date comes from the date-sheet picker (quick rows +
+        // month grids — the same picker grammar as Quick Add's),
+        // never a typed yyyy-MM-dd field (Check Team 2 polish item).
+        val dateRow = LinearLayout(this); dateRow.orientation = LinearLayout.HORIZONTAL
+        dateRow.gravity = Gravity.CENTER_VERTICAL
+        dateRow.background = roundedRect(if (isV5()) V5.POPUP else Todoist.CHIP, 12f)
+        dateRow.setPadding(dp(14f), dp(12f), dp(10f), dp(12f))
+        dateRow.layoutParams = lp(b = dp(10f))
+        val dv = tv("▦  " + fmtDateWords(cdDate), 15f, Glass.text(this@MainActivity), true)
+        dv.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        dateRow.addView(dv)
+        val pick = tv("Pick date", 13f, if (isV5()) V5.ACCENT_BRAND else TD_SALMON, true)
+        pick.setPadding(dp(8f), dp(4f), dp(4f), dp(4f))
+        dateRow.addView(pick)
+        dateRow.setOnClickListener {
+            pushSheet(buildCountdownDatePicker(existing)) { buildCountdownSheet(existing) }
+        }
+        col.addView(dateRow)
+        col.addView(label("Colour"))
+        val crow = LinearLayout(this); crow.orientation = LinearLayout.HORIZONTAL
+        HF_COLORS.forEachIndexed { i, hex ->
+            val sw = tv(if (hex == cdColor) "✓" else "", 12f, 0xFFFFFFFF.toInt(), true)
+            sw.gravity = Gravity.CENTER
+            sw.background = ovalDrawable(habitColor(hex))
+            sw.layoutParams = LinearLayout.LayoutParams(dp(32f), dp(32f)).apply { rightMargin = dp(6f) }
+            sw.setOnClickListener {
+                cdColor = hex
+                for (j in 0 until crow.childCount) {
+                    (crow.getChildAt(j) as? TextView)?.text = if (HF_COLORS[j] == hex) "✓" else ""
+                }
+            }
+            crow.addView(sw)
+        }
+        val crowScroll = HorizontalScrollView(this)
+        crowScroll.isHorizontalScrollBarEnabled = false
+        crowScroll.addView(crow)
+        col.addView(crowScroll)
+        val save = accentBtn("Save countdown") {
+            val title = titleIn.text.toString().trim()
+            val date = cdDate
+            if (title.isEmpty()) { toast("Give it a title"); return@accentBtn }
+            if (!Dates.isValidDateStr(date)) { toast("Pick a valid date"); return@accentBtn }
+            if (existing == null) {
+                Store.addCountdown(CountdownItem(uid(), title, date, cdColor))
+            } else {
+                existing.title = title
+                existing.targetDate = date
+                existing.color = cdColor
+                Store.save()
+            }
+            Sfx.add(); closeSheet(); render()
+        }
+        save.layoutParams = lp(t = dp(14f))
+        col.addView(save)
+        if (existing != null) {
+            val del = tv("Delete countdown", 15f, Glass.overdue(this@MainActivity))
+            del.gravity = Gravity.CENTER
+            del.setPadding(dp(12f), dp(14f), dp(12f), dp(6f))
+            del.setOnClickListener {
+                val removed = Store.deleteCountdown(existing.id)
+                closeSheet(); render()
+                if (removed != null) showCountdownUndo(removed)
+            }
+            col.addView(del)
+        }
+        return col
+    }
+
+    /** Countdown date picker: the app's date-sheet grammar (quick
+     *  rows + stacked month grids, modelled on buildQaDatePicker)
+     *  driving [cdDate]. Picking a day returns to the countdown sheet
+     *  with the new date in its date row. */
+    private fun buildCountdownDatePicker(existing: CountdownItem?): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Target date", 17f, Glass.text(this@MainActivity), true))
+        val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+        fun quickRow(icon: String, lbl: String, date: String) {
+            val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            val ic = tv(icon, 16f, if (isV5()) V5.ACCENT else TD_RED)
+            ic.layoutParams = LinearLayout.LayoutParams(dp(34f), -2)
+            row.addView(ic)
+            val tt = tv(lbl + if (cdDate == date) "  ✓" else "", 15f)
+            tt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            row.addView(tt)
+            row.addView(tv(dayNames[Dates.jsDayOfWeek(Dates.parse(date))], 13f, Glass.muted(this@MainActivity)))
+            row.setOnClickListener {
+                cdDate = date; Sfx.tick()
+                returnToSheet(buildCountdownSheet(existing))
+            }
+            col.addView(row)
+        }
+        quickRow("📅", "Today", Dates.today())
+        quickRow("🌅", "Tomorrow", Dates.addDays(Dates.today(), 1))
+        quickRow("⏭️", "+30 days", Dates.addDays(Dates.today(), 30))
+        quickRow("📆", "+90 days", Dates.addDays(Dates.today(), 90))
+        quickRow("🗓", "+1 year", Dates.addDays(Dates.today(), 365))
+        val base = Dates.parse(cdDate)
+        for (mOff in 0..2) {
+            val mc = base.clone() as java.util.Calendar
+            mc.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            mc.add(java.util.Calendar.MONTH, mOff)
+            col.addView(cdMonthGrid(mc.get(java.util.Calendar.YEAR), mc.get(java.util.Calendar.MONTH), existing))
+        }
+        val back = ghostBtn("← Back") {
+            if (!popSheet()) returnToSheet(buildCountdownSheet(existing))
+        }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
+        return col
+    }
+
+    /** One month grid for the countdown picker (qaMonthGrid's shape,
+     *  driven by cdDate instead of the Quick Add draft). */
+    private fun cdMonthGrid(year: Int, month: Int, existing: CountdownItem?): View {
+        val wrap = LinearLayout(this); wrap.orientation = LinearLayout.VERTICAL
+        val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val mt = tv(monthNames[month] + " " + year, 15f, Glass.text(this@MainActivity), true)
+        mt.layoutParams = lp(t = dp(14f), b = dp(6f))
+        wrap.addView(mt)
+        val dowRow = LinearLayout(this); dowRow.orientation = LinearLayout.HORIZONTAL
+        listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
+            val t = tv(d, 11f, Glass.muted(this@MainActivity), true); t.gravity = Gravity.CENTER
+            t.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            dowRow.addView(t)
+        }
+        wrap.addView(dowRow)
+        val first = java.util.Calendar.getInstance(); first.set(year, month, 1, 0, 0, 0)
+        val startDow = (Dates.jsDayOfWeek(first) + 6) % 7 // Monday-first
+        val dim = first.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+        var day = 1
+        for (week in 0 until 6) {
+            if (day > dim) break
+            val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+            for (dowI in 0 until 7) {
+                val cell = LinearLayout(this); cell.orientation = LinearLayout.VERTICAL
+                cell.gravity = Gravity.CENTER_HORIZONTAL
+                cell.layoutParams = LinearLayout.LayoutParams(0, dp(46f), 1f)
+                if (!(week == 0 && dowI < startDow) && day <= dim) {
+                    val ds = year.toString() + "-" + (month + 1).toString().padStart(2, '0') + "-" + day.toString().padStart(2, '0')
+                    val isToday = ds == Dates.today()
+                    val isSel = ds == cdDate
+                    val numWrap = FrameLayout(this)
+                    numWrap.layoutParams = LinearLayout.LayoutParams(dp(30f), dp(30f))
+                    if (isToday || isSel) numWrap.background = ovalDrawable(if (isV5()) V5.ACCENT else TD_RED)
+                    val num = tv(day.toString(), 14f,
+                        if (isToday || isSel) 0xFFFFFFFF.toInt()
+                        else if (ds < Dates.today()) TD_GREY else Glass.text(this@MainActivity), isToday)
+                    num.gravity = Gravity.CENTER
+                    num.layoutParams = FrameLayout.LayoutParams(-1, -1)
+                    numWrap.addView(num)
+                    cell.addView(numWrap)
+                    val dd = ds
+                    cell.setOnClickListener {
+                        cdDate = dd; Sfx.tick()
+                        returnToSheet(buildCountdownSheet(existing))
+                    }
+                    day++
+                }
+                rowL.addView(cell)
+            }
+            wrap.addView(rowL)
+        }
+        return wrap
+    }
+
+    private fun showCountdownUndo(c: CountdownItem) {
+        undoBar.removeAllViews()
+        val lbl = tv("Deleted countdown \"" + c.title + "\"", 13f)
+        lbl.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10f) }
+        undoBar.addView(lbl)
+        val btn = tv("UNDO", 15f, Glass.gold(this@MainActivity), true)
+        btn.setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+        btn.setOnClickListener {
+            Store.restoreCountdown(c)
+            undoBar.visibility = View.GONE
+            render(); toast("Restored ↩️")
+        }
+        undoBar.addView(btn)
+        undoHide?.let { handler.removeCallbacks(it) }
+        undoHide = Runnable { undoBar.visibility = View.GONE }
+        undoBar.visibility = View.VISIBLE
+        handler.postDelayed(undoHide!!, 5000)
+    }
+
+    /* ---------------- v5 stats pack (SHADOW-THREE §3) ---------------- */
+
+    private fun statCardV5(big: String, small: String): LinearLayout {
+        val c = LinearLayout(this); c.orientation = LinearLayout.VERTICAL
+        c.background = v5CardBg(V5.R_TILE)
+        c.setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+        c.layoutParams = lp(b = dp(12f))
+        c.addView(tv(big, 20f, V5.TEXT, true))
+        val s = tv(small, 12f, V5.MUTED)
+        s.layoutParams = lp(t = dp(2f))
+        c.addView(s)
+        return c
+    }
+
+    private fun renderStatsPack() {
+        val today = Dates.today()
+        val comps = Store.state.completions
+        content.addView(dayGroup("INSIGHTS"))
+        // Editorial caption: rule-based, first match wins (§3.5).
+        val from30 = Dates.addDays(today, -29)
+        val done30 = Db.outcomesInRange(from30, today, "done").size
+        val missed30 = Db.outcomesInRange(from30, today, "missed").size
+        val decided = done30 + missed30
+        val rate = if (decided > 0) done30 * 100 / decided else null
+        val streak = Stats.currentStreak(comps, today)
+        val caption = when {
+            streak >= 7 -> "Kept to your plan for " + streak + " days — this is the comeback working."
+            rate != null && rate >= 80 -> "A strong month. Protect the streak."
+            rate != null && rate >= 40 -> "Half the plan, all of the direction. Tighten one day at a time."
+            rate != null -> "A light stretch — plenty of breathing room. One Must today changes it."
+            else -> "Your plan starts with today's first tick."
+        }
+        val capCard = prodCard()
+        capCard.addView(tv(caption, 15f, V5.TEXT, true))
+        content.addView(capCard)
+
+        // Annual heatmap with year pager (§3.1).
+        val hm = prodCard()
+        hm.addView(tv("Completions heatmap", 15f, V5.MUTED, true))
+        val hrow = LinearLayout(this); hrow.orientation = LinearLayout.HORIZONTAL
+        hrow.gravity = Gravity.CENTER_VERTICAL
+        hrow.layoutParams = lp(t = dp(6f))
+        val hprev = tv("‹", 22f, V5.TEXT, true)
+        hprev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        hprev.setOnClickListener { statsYearSel--; heatCaption = ""; render() }
+        val ht = tv(statsYearSel.toString(), 16f, V5.TEXT, true)
+        ht.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        ht.gravity = Gravity.CENTER
+        val curYear = Dates.parse(today).get(java.util.Calendar.YEAR)
+        val hnext = tv("›", 22f, V5.TEXT, true)
+        hnext.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        hnext.alpha = if (statsYearSel >= curYear) 0.35f else 1f
+        if (statsYearSel < curYear) hnext.setOnClickListener { statsYearSel++; heatCaption = ""; render() }
+        hrow.addView(hprev); hrow.addView(ht); hrow.addView(hnext)
+        hm.addView(hrow)
+        val heat = HeatmapView(this)
+        heat.setData(statsYearSel, Db.doneCountByDay(statsYearSel.toString() + "-01-01", statsYearSel.toString() + "-12-31"))
+        heat.onCellTap = { d ->
+            val n = Db.doneCountByDay(d, d)[d] ?: 0
+            heatCaption = fmtMonDay(d) + " — " + n + " done"
+            render()
+        }
+        heat.layoutParams = lp(t = dp(8f))
+        hm.addView(heat)
+        if (heatCaption.isNotEmpty()) {
+            val hc = tv(heatCaption, 13f, V5.MUTED)
+            hc.layoutParams = lp(t = dp(8f))
+            hm.addView(hc)
+        }
+        content.addView(hm)
+
+        // Daily Completed chart with week pager (§3.2).
+        val dc = prodCard()
+        dc.addView(tv("Daily completed", 15f, V5.MUTED, true))
+        val drow = LinearLayout(this); drow.orientation = LinearLayout.HORIZONTAL
+        drow.gravity = Gravity.CENTER_VERTICAL
+        drow.layoutParams = lp(t = dp(6f))
+        val dprev = tv("‹", 22f, V5.TEXT, true)
+        dprev.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        dprev.setOnClickListener { statsWeekStartSel = Dates.addDays(statsWeekStartSel, -7); render() }
+        val dt = tv(fmtMonDay(statsWeekStartSel) + " – " + fmtMonDay(Dates.addDays(statsWeekStartSel, 6)), 15f, V5.TEXT, true)
+        dt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        dt.gravity = Gravity.CENTER
+        val curWs = Stats.weekStart(today)
+        val dnext = tv("›", 22f, V5.TEXT, true)
+        dnext.setPadding(dp(8f), dp(2f), dp(8f), dp(2f))
+        dnext.alpha = if (statsWeekStartSel >= curWs) 0.35f else 1f
+        if (statsWeekStartSel < curWs) dnext.setOnClickListener { statsWeekStartSel = Dates.addDays(statsWeekStartSel, 7); render() }
+        drow.addView(dprev); drow.addView(dt); drow.addView(dnext)
+        dc.addView(drow)
+        val byDay = Db.doneCountByDay(statsWeekStartSel, Dates.addDays(statsWeekStartSel, 6))
+        val bars = DailyBarsView(this)
+        bars.counts = (0..6).map { byDay[Dates.addDays(statsWeekStartSel, it)] ?: 0 }
+        bars.fraction = 0f
+        bars.layoutParams = lp(t = dp(6f))
+        dc.addView(bars)
+        content.addView(dc)
+        bars.post {
+            val anim = ValueAnimator.ofFloat(0f, 1f)
+            anim.duration = 300
+            anim.addUpdateListener { bars.fraction = it.animatedValue as Float; bars.invalidate() }
+            anim.start()
+        }
+
+        // Most Productive Day + Completion Rate tiles (§3.3/§3.4).
+        val byDow = IntArray(8)
+        Db.doneCountByDay(Dates.addDays(today, -83), today).forEach { (d, n) -> byDow[Dates.dayOfWeek(d)] += n }
+        var bestDow = 0
+        var bestN = 0
+        for (d in 1..7) if (byDow[d] > bestN) { bestN = byDow[d]; bestDow = d }
+        val dowNames = arrayOf("", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        val trow = LinearLayout(this); trow.orientation = LinearLayout.HORIZONTAL
+        val mpd = statCardV5(if (bestDow == 0) "—" else dowNames[bestDow], "most productive day")
+        mpd.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10f) }
+        val crate = statCardV5(if (rate != null) rate.toString() + "%" else "No data yet", "completion rate · 30 days")
+        crate.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        trow.addView(mpd); trow.addView(crate)
+        content.addView(trow)
+
+        // Tasks in Next 7 Days (§3.6).
+        content.addView(sectionHeader("Tasks in Next 7 Days"))
+        val upcoming = Store.sortTasks(Store.state.tasks.filter {
+            it.dueDate != null && it.dueDate!! > today && it.dueDate!! <= Dates.addDays(today, 7)
+        }).take(5)
+        if (upcoming.isEmpty()) {
+            content.addView(tv("Nothing scheduled in the next 7 days.", 13f, V5.MUTED))
+        } else {
+            upcoming.forEach { t ->
+                val c = v5TaskCard(t, showProject = true, compact = true)
+                c.layoutParams = lp(b = dp(10f))
+                content.addView(c)
+            }
+        }
+    }
+
+    /* ---------------- v5 Browse (SHADOW-FOUR §3.4) ------------------- */
+
+    private fun projectTile(p: ProjectItem, open: Int, wide: Boolean): LinearLayout {
+        val color = try { android.graphics.Color.parseColor(p.color) } catch (e: Exception) { V5.FAINT }
+        val done = Store.state.completions.count { it.projectId == p.id }
+        val tile = LinearLayout(this); tile.orientation = LinearLayout.VERTICAL
+        tile.background = roundedRect(V5.tint(color, 36), V5.R_CARD, V5.tint(color, 77))
+        tile.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        if (wide) tile.layoutParams = lp(t = dp(2f))
+        tile.addView(tv(p.name, 16f, V5.TEXT, true))
+        val s = tv(open.toString() + " open · " + done + " done", 12f, V5.MUTED)
+        s.layoutParams = lp(t = dp(4f))
+        tile.addView(s)
+        tile.setOnClickListener { sub = "project:" + p.id; render() }
+        return tile
+    }
+
+    private fun renderBrowseV5() {
+        // Profile header: karma ring avatar + name + bell/gear.
+        val prof = LinearLayout(this); prof.orientation = LinearLayout.HORIZONTAL
+        prof.gravity = Gravity.CENTER_VERTICAL
+        prof.setPadding(0, dp(4f), 0, dp(12f))
+        val avatarWrap = FrameLayout(this)
+        avatarWrap.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f)).apply { rightMargin = dp(12f) }
+        val ring = FocusRing(this)
+        ring.ringColor = V5.ACCENT
+        ring.trackColor = V5.tint(V5.ACCENT, 46)
+        ring.fraction = Karma.levelFor(Store.state.karmaPoints).progress
+        ring.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        avatarWrap.addView(ring)
+        val av = tv("S", 17f, V5.ACCENT_BRAND, true)
+        av.gravity = Gravity.CENTER
+        av.background = ovalDrawable(V5.ACCENT_TINT)
+        av.layoutParams = FrameLayout.LayoutParams(dp(34f), dp(34f)).apply { gravity = Gravity.CENTER }
+        avatarWrap.addView(av)
+        prof.addView(avatarWrap)
+        val nm = tv("Shadow", 20f, V5.TEXT, true)
+        nm.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        prof.addView(nm)
+        val bell = tv("🔔", 20f)
+        bell.gravity = Gravity.CENTER
+        bell.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        bell.contentDescription = "Activity"
+        bell.setOnClickListener { sub = "history"; render() }
+        prof.addView(bell)
+        val gear = tv("⚙", 22f, V5.TEXT)
+        gear.gravity = Gravity.CENTER
+        gear.layoutParams = LinearLayout.LayoutParams(dp(40f), dp(40f))
+        gear.contentDescription = "Settings"
+        gear.setOnClickListener { showSheet(appearanceCard()) }
+        prof.addView(gear)
+        content.addView(prof)
+
+        // Search ghost pill.
+        val search = LinearLayout(this); search.orientation = LinearLayout.HORIZONTAL
+        search.gravity = Gravity.CENTER_VERTICAL
+        search.background = roundedRect(V5.CARD, 999f, V5.HAIRLINE)
+        search.setPadding(dp(16f), 0, dp(16f), 0)
+        search.layoutParams = lp(h = dp(48f), b = dp(6f))
+        search.addView(tv("⌕", 17f, V5.MUTED))
+        val st = tv("Search tasks", 14f, V5.PLACEHOLDER)
+        st.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8f) }
+        search.addView(st)
+        search.setOnClickListener { sub = "search"; render() }
+        content.addView(search)
+
+        // Project mosaic: busiest project wide, the rest 2-up, each
+        // tile tinted with its project colour.
+        val pHead = LinearLayout(this); pHead.orientation = LinearLayout.HORIZONTAL
+        pHead.gravity = Gravity.CENTER_VERTICAL
+        pHead.layoutParams = lp(t = dp(14f), b = dp(10f))
+        val pT = tv("Projects", 20f, V5.TEXT, true)
+        pT.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        pHead.addView(pT)
+        val pAdd = tv("+", 22f, V5.TEXT)
+        pAdd.setPadding(dp(10f), dp(2f), dp(6f), dp(2f))
+        pAdd.contentDescription = "New project"
+        pAdd.setOnClickListener { promptText("Project name:") { name -> Store.projByName(name); Store.save(); render() } }
+        pHead.addView(pAdd)
+        content.addView(pHead)
+        val projects = Store.state.projects
+            .map { p -> p to Store.state.tasks.count { it.projectId == p.id } }
+            .sortedByDescending { it.second }
+        if (projects.isEmpty()) {
+            content.addView(tv("No projects yet — tap + to add one.", 13f, V5.MUTED))
+        } else {
+            content.addView(projectTile(projects[0].first, projects[0].second, wide = true))
+            var i = 1
+            while (i < projects.size) {
+                val rowL = LinearLayout(this); rowL.orientation = LinearLayout.HORIZONTAL
+                rowL.layoutParams = lp(t = dp(10f))
+                val a = projectTile(projects[i].first, projects[i].second, wide = false)
+                a.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                rowL.addView(a)
+                if (i + 1 < projects.size) {
+                    val b = projectTile(projects[i + 1].first, projects[i + 1].second, wide = false)
+                    b.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(10f) }
+                    rowL.addView(b)
+                    i += 2
+                } else i += 1
+                content.addView(rowL)
+            }
+        }
+        val newTile = LinearLayout(this); newTile.orientation = LinearLayout.HORIZONTAL
+        newTile.gravity = Gravity.CENTER
+        newTile.background = roundedRect(V5.CARD, V5.R_CARD, V5.HAIRLINE)
+        newTile.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        newTile.layoutParams = lp(t = dp(10f))
+        newTile.addView(tv("＋ New project", 14f, V5.MUTED, true))
+        newTile.setOnClickListener { promptText("Project name:") { name -> Store.projByName(name); Store.save(); render() } }
+        content.addView(newTile)
+
+        // Modules container — every module is reachable here even when
+        // it is not in the dock (§7).
+        content.addView(dayGroup("MODULES"))
+        content.addView(groupedMenuCard(listOf(
+            browseRow("⭐", V5.P2, "Starred", Store.state.tasks.count { it.starred }.toString()) { sub = "starred"; render() },
+            browseRow("▦", V5.ACCENT_BRAND, "Filters & Labels", null) { sub = "filterslabels"; render() },
+            browseRow("▤", V5.ACCENT_BRAND, "Templates", null) { showSheet(buildTemplatesSheet()) },
+            browseRow("🔥", V5.ACCENT_BRAND, "Habits", null) { sub = "habits"; render() },
+            browseRow("⊞", V5.ACCENT_BRAND, "Matrix", null) { sub = "matrix"; render() },
+            browseRow("⏳", V5.ACCENT_BRAND, "Countdowns", null) { sub = "countdowns"; render() },
+            browseRow("◎", V5.ACCENT_BRAND, "Focus", null) { sub = "focus"; render() },
+            browseRow("🤖", V5.ACCENT_BRAND, "Smart Plan", null) { sub = "smartplan"; render() },
+            browseRow("🕘", V5.ACCENT_BRAND, "Reporting", null) { sub = "history"; render() },
+            browseRow("💾", V5.ACCENT_BRAND, "Backups & Sync", null) { sub = "backups"; render() }
+        )))
+        content.addView(dayGroup("SETTINGS"))
+        content.addView(groupedMenuCard(listOf(
+            browseRow("▤", V5.TEXT, "Display", null) { showDisplaySheet() },
+            browseRow("▦", V5.TEXT, "Dock modules", null) { sub = "dock"; render() },
+            browseRow("⚙", V5.TEXT, "Appearance & sounds", null) { showSheet(appearanceCard()) },
+            browseRow("?", V5.TEXT, "Help & resources", null) { showSheet(buildHelpSheet()) }
+        )))
+        val about = LinearLayout(this); about.orientation = LinearLayout.VERTICAL
+        about.background = v5CardBg()
+        about.setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+        about.layoutParams = lp(t = dp(12f), b = dp(10f))
+        about.addView(tv("GhostBlade Task", 16f, V5.TEXT, true))
+        val ab = tv("Kotlin edition · data lives on this device · reminders fire even when the app is closed and survive reboot.", 13f, V5.MUTED)
+        ab.layoutParams = lp(t = dp(4f))
+        about.addView(ab)
+        content.addView(about)
+    }
+
+    /* ---------------- Quick Add templates sheet (§8.3) --------------- */
+
+    private fun buildQaTemplates(): View {
+        val col = LinearLayout(this); col.orientation = LinearLayout.VERTICAL
+        col.addView(tv("Templates", 17f, Glass.text(this@MainActivity), true))
+        col.addView(dayGroup("CHECKLISTS"))
+        if (Store.state.checklistTemplates.isEmpty()) {
+            col.addView(tv("No checklist templates yet.", 13f, Glass.muted(this@MainActivity)))
+        }
+        Store.state.checklistTemplates.forEach { tpl ->
+            val row = tv("▤  " + tpl.name + "  ·  " + tpl.items.size + " items", 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener {
+                val pid = if (qaProjectSet) qaProjectId
+                    else qaPreviewParse().projectName?.let { Store.projByName(it).id }
+                val t = Store.applyChecklistTemplate(tpl.id, pid)
+                if (t != null) { Sfx.add(); toast("Checklist added as a task") }
+                returnToQuickAdd()
+                render()
+            }
+            col.addView(row)
+        }
+        col.addView(dayGroup("PROJECT TEMPLATES"))
+        if (Store.state.templates.isEmpty()) {
+            col.addView(tv("No project templates yet.", 13f, Glass.muted(this@MainActivity)))
+        }
+        Store.state.templates.forEach { tpl ->
+            val row = tv("▤  " + tpl.name + "  →  " + tpl.projectName, 15f)
+            row.setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+            row.setOnClickListener {
+                val np = Store.applyTemplate(tpl.id)
+                closeSheet()
+                if (np != null) { sub = "project:" + np.id; toast("Project created from template") }
+                render()
+            }
+            col.addView(row)
+        }
+        val back = ghostBtn("← Back") { if (!popSheet()) returnToQuickAdd() }
+        back.layoutParams = lp(t = dp(10f))
+        col.addView(back)
+        return col
+    }
+
     private fun renderCalendar() {
         val year = calCursor.get(java.util.Calendar.YEAR)
         val month = calCursor.get(java.util.Calendar.MONTH)
@@ -4113,9 +6961,26 @@ class MainActivity : Activity() {
         prev.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, -1); render() }
         val title = tv("${monthNames[month]} $year", 17f, Glass.text(this@MainActivity), true)
         title.layoutParams = LinearLayout.LayoutParams(0, -2, 1f); title.gravity = Gravity.CENTER
+        // §3.6.1: month + year at T_TITLE under v5.
+        if (isV5()) title.textSize = 24f
         val next = tv("›", 26f, Glass.text(this@MainActivity), true); next.setPadding(dp(10f), dp(2f), dp(10f), dp(2f))
         next.setOnClickListener { calCursor.add(java.util.Calendar.MONTH, 1); render() }
         head.addView(prev); head.addView(title); head.addView(next)
+        if (isV5()) {
+            // §3.6.1: "Today" is a ghost chip (POPUP pill), not chipBtn.
+            val todayChip = tv("Today", 13f, V5.TEXT, true)
+            todayChip.gravity = Gravity.CENTER
+            todayChip.background = roundedRect(V5.POPUP, 999f, V5.HAIRLINE)
+            todayChip.setPadding(dp(14f), dp(7f), dp(14f), dp(7f))
+            todayChip.contentDescription = "Jump to today"
+            todayChip.setOnClickListener {
+                calCursor = java.util.Calendar.getInstance()
+                selDay = Dates.today()
+                Sfx.tick(); render()
+            }
+            todayChip.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8f) }
+            head.addView(todayChip)
+        }
         content.addView(head)
 
         val calCard = card()
@@ -4146,11 +7011,19 @@ class MainActivity : Activity() {
                     cell.textSize = 13f
                     cell.setTextColor(if (Dates.isOverdue(TaskItem(id = "", title = "", dueDate = ds))) Glass.overdue(this@MainActivity) else Glass.text(this@MainActivity))
                     when {
-                        ds == selDay -> cell.background = Glass.chip(this, true)
+                        ds == selDay -> {
+                            if (isV5()) {
+                                // Selected day = solid accent circle, white
+                                // number (SHADOW-FOUR §3.6).
+                                cell.background = ovalDrawable(V5.ACCENT)
+                                cell.setTextColor(0xFFFFFFFF.toInt())
+                            } else cell.background = Glass.chip(this, true)
+                        }
                         ds == Dates.today() -> {
                             val g = android.graphics.drawable.GradientDrawable()
                             g.cornerRadius = dp(12f).toFloat()
-                            g.setStroke(dp(1.5f), if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.base(this@MainActivity))
+                            g.setStroke(dp(1.5f), if (isV5()) V5.ACCENT
+                                else if (Glass.isWhite(this@MainActivity)) Accents.acc2(this@MainActivity) else Accents.base(this@MainActivity))
                             cell.background = g
                         }
                     }
@@ -4165,9 +7038,17 @@ class MainActivity : Activity() {
         content.addView(calCard)
         val sd = selDay
         if (sd != null) {
-            content.addView(dayGroup((if (sd == Dates.today()) "TODAY · " else "") + Dates.fmtDay(sd).uppercase()))
+            if (isV5()) {
+                // §3.6.3: the selected-day label is T_SECTION.
+                val dl = tv(fmtDayLong(sd), 20f, V5.TEXT, true)
+                dl.layoutParams = lp(t = dp(16f), b = dp(8f))
+                content.addView(dl)
+            } else {
+                content.addView(dayGroup((if (sd == Dates.today()) "TODAY · " else "") + Dates.fmtDay(sd).uppercase()))
+            }
             val list = Store.sortTasks(Store.state.tasks.filter { it.dueDate == sd })
-            if (list.isEmpty()) content.addView(emptyView("🌤️", "Nothing scheduled this day."))
+            if (list.isEmpty()) content.addView(emptyView("🌤️",
+                if (isV5()) "A free day — take it easy, or plan something." else "Nothing scheduled this day."))
             else list.forEach { content.addView(taskRow(it)) }
             val add = accentBtn("＋ Add task on this day") { openQuickAdd(sd) }
             content.addView(add)
@@ -4207,7 +7088,21 @@ class MainActivity : Activity() {
         c.addView(sp)
         val chipsRow = LinearLayout(this); chipsRow.orientation = LinearLayout.HORIZONTAL
         listOf(10, 25, 45, 60).forEach { m ->
-            val ch = chipBtn(m.toString() + "m", focusTotal == m * 60) {
+            val on = focusTotal == m * 60
+            val ch = if (isV5()) {
+                // §2.8 sheet-chip grammar: on = ACCENT_TINT fill +
+                // ACCENT_BRAND text + ACCENT_TINT_DEEP border; off =
+                // POPUP + MUTED (Glass.sheetChip's v5 branch).
+                val c = tv(m.toString() + "m", 13f, if (on) V5.ACCENT_BRAND else V5.MUTED, on)
+                c.background = Glass.sheetChip(this, on)
+                c.setPadding(dp(11f), dp(8f), dp(11f), dp(8f))
+                c.setOnClickListener {
+                    focusTotal = m * 60
+                    if (!focusRunning) focusLeft = focusTotal
+                    render()
+                }
+                c
+            } else chipBtn(m.toString() + "m", on) {
                 focusTotal = m * 60
                 if (!focusRunning) focusLeft = focusTotal
                 render()
@@ -4308,7 +7203,7 @@ class MainActivity : Activity() {
 
     private fun prodCard(): LinearLayout {
         val c = LinearLayout(this); c.orientation = LinearLayout.VERTICAL
-        c.background = roundedRect(TD_CARD, 16f)
+        c.background = roundedRect(cardFill(), 16f)
         c.setPadding(dp(20f), dp(18f), dp(20f), dp(18f))
         c.layoutParams = lp(b = dp(12f))
         return c
@@ -4413,7 +7308,241 @@ class MainActivity : Activity() {
         showSheet(col)
     }
 
+    /** Segmented control (§2.10): TRACK pill, selected segment one
+     *  step lighter (#2E2E35) with TEXT, unselected MUTED — selection
+     *  by lightness, never accent. */
+    private fun v5Segmented(options: List<Pair<String, String>>, selected: String,
+                            onPick: (String) -> Unit): LinearLayout {
+        val track = LinearLayout(this); track.orientation = LinearLayout.HORIZONTAL
+        track.background = roundedRect(V5.TRACK, 999f)
+        track.setPadding(dp(3f), dp(3f), dp(3f), dp(3f))
+        track.layoutParams = LinearLayout.LayoutParams(-1, dp(36f))
+        options.forEach { (id, lbl) ->
+            val on = id == selected
+            val seg = tv(lbl, 13f, if (on) V5.TEXT else V5.MUTED, on)
+            seg.gravity = Gravity.CENTER
+            if (on) seg.background = roundedRect(0xFF2E2E35.toInt(), 999f)
+            seg.layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+            seg.setOnClickListener { if (!on) onPick(id) }
+            track.addView(seg)
+        }
+        return track
+    }
+
+    /** One §3.7.4 summary tile: caps label, T_NUMBER value, optional
+     *  delta/sub line. */
+    private fun v5SummaryTile(labelText: String, value: String, sub: String?): LinearLayout {
+        val t = LinearLayout(this); t.orientation = LinearLayout.VERTICAL
+        t.background = v5CardBg(V5.R_TILE)
+        t.setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+        val lb = tv(labelText.uppercase(), 11f, V5.MUTED, true)
+        lb.letterSpacing = 0.06f
+        t.addView(lb)
+        val v = tv(value, 24f, V5.TEXT, true)
+        v.layoutParams = lp(t = dp(6f))
+        t.addView(v)
+        if (sub != null) {
+            val s = tv(sub, 11f, V5.MUTED)
+            s.layoutParams = lp(t = dp(2f))
+            t.addView(s)
+        }
+        return t
+    }
+
+    /** One §3.7.5 goal-ring tile: number-centred ring + label + sub. */
+    private fun v5GoalRingTile(labelText: String, fraction: Float, arc: Int, sub: String,
+                               click: () -> Unit): LinearLayout {
+        val t = LinearLayout(this); t.orientation = LinearLayout.VERTICAL
+        t.gravity = Gravity.CENTER_HORIZONTAL
+        t.background = v5CardBg(V5.R_TILE)
+        t.setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+        val ring = V5RingView(this)
+        ring.fraction = fraction
+        ring.arcColor = arc
+        ring.layoutParams = LinearLayout.LayoutParams(dp(64f), dp(64f))
+        t.addView(ring)
+        val lb = tv(labelText, 12f, V5.TEXT, true)
+        lb.layoutParams = lp(t = dp(8f))
+        t.addView(lb)
+        t.addView(tv(sub, 11f, V5.MUTED))
+        t.setOnClickListener { click() }
+        return t
+    }
+
+    /** Monthly completion buckets, oldest → newest, from the earliest
+     *  completion's month through the current month (capped at 36). */
+    private fun monthlySeries(comps: List<CompletionItem>, today: String): List<Pair<String, Int>> {
+        val byMonth = HashMap<String, Int>()
+        comps.forEach { c -> val k = c.date.substring(0, 7); byMonth[k] = (byMonth[k] ?: 0) + 1 }
+        val startKey = (comps.minOfOrNull { it.date } ?: today).substring(0, 7)
+        val endKey = today.substring(0, 7)
+        val out = mutableListOf<Pair<String, Int>>()
+        var cur = startKey + "-01"
+        while (cur.substring(0, 7) <= endKey && out.size < 36) {
+            val k = cur.substring(0, 7)
+            out.add(k to (byMonth[k] ?: 0))
+            val cal = Dates.parse(cur)
+            cal.add(java.util.Calendar.MONTH, 1)
+            cur = Dates.dstr(cal)
+        }
+        return out
+    }
+
+    private fun movingAvg(values: List<Int>, window: Int): List<Float> =
+        values.mapIndexed { i, _ ->
+            val from = maxOf(0, i - window + 1)
+            values.subList(from, i + 1).average().toFloat()
+        }
+
+    /** Productivity, v5 (§3.7): range segmented control → Canvas
+     *  line+bar chart card → 2×2 summary grid (with THE accent-filled
+     *  Karma tile) → goal rings row → Shadow Three's stats pack below.
+     *  The Todoist-shaped Daily/Weekly/Karma tabs below this function
+     *  remain the rollback skins' screen (CHECK1 P2-4). */
+    private fun renderStatsV5() {
+        val today = Dates.today()
+        val comps = Store.state.completions
+        val seg = v5Segmented(
+            listOf("week" to "Week", "month" to "Month", "year" to "Year", "all" to "All Time"),
+            statsRange) { statsRange = it; Sfx.tick(); render() }
+        seg.layoutParams = LinearLayout.LayoutParams(-1, dp(36f)).apply { topMargin = dp(4f) }
+        content.addView(seg)
+
+        val series: List<Pair<String, Int>> = when (statsRange) {
+            "month" -> Stats.lastNDaysCounts(comps, today, 30).reversed()
+            "year" -> Stats.lastNWeeksCounts(comps, today, 52).reversed()
+            "all" -> monthlySeries(comps, today)
+            else -> Stats.lastNDaysCounts(comps, today, 7).reversed()
+        }
+        val values = series.map { it.second }
+        val monAbbr = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val dayLetters = arrayOf("S", "M", "T", "W", "T", "F", "S")
+        val labels: List<String> = when (statsRange) {
+            "month" -> series.mapIndexed { i, (d, _) ->
+                val dom = Dates.parse(d).get(java.util.Calendar.DAY_OF_MONTH)
+                if (i % 5 == 0 || i == series.size - 1) dom.toString() else ""
+            }
+            "year" -> series.mapIndexed { i, (d, _) ->
+                val m = Dates.parse(d).get(java.util.Calendar.MONTH)
+                val prevM = if (i == 0) -1 else Dates.parse(series[i - 1].first).get(java.util.Calendar.MONTH)
+                if (m != prevM) monAbbr[m] else ""
+            }
+            "all" -> series.mapIndexed { i, (k, _) ->
+                val m = k.substring(5, 7).toInt() - 1
+                if (m == 0 || i == 0) monAbbr[m] + " '" + k.substring(2, 4) else monAbbr[m]
+            }
+            else -> series.map { (d, _) -> dayLetters[Dates.jsDayOfWeek(Dates.parse(d))] }
+        }
+        // Trend line: for Week it is Karma.trend() itself (§3.7.3's
+        // named source — the same 7 values as the bars); longer ranges
+        // smooth the bars into a trend with a moving average.
+        val line: List<Float> = when (statsRange) {
+            "month" -> movingAvg(values, 5)
+            "year" -> movingAvg(values, 4)
+            "all" -> movingAvg(values, 3)
+            else -> Karma.trend(comps, today).reversed().map { it.toFloat() }
+        }
+        val chartCard = LinearLayout(this); chartCard.orientation = LinearLayout.VERTICAL
+        chartCard.background = v5CardBg()
+        chartCard.setPadding(dp(16f), dp(14f), dp(16f), dp(12f))
+        chartCard.layoutParams = lp(t = dp(16f))
+        val chart = StatsChartView(this)
+        chart.bars = values
+        chart.line = line
+        chart.labels = labels
+        chartCard.addView(chart)
+        content.addView(chartCard)
+
+        // Summary 2×2 (§3.7.4).
+        val total = values.sum()
+        val deltaTxt: String? = when (statsRange) {
+            "week", "month" -> {
+                val days = if (statsRange == "week") 7 else 30
+                val prev = comps.count {
+                    it.date >= Dates.addDays(today, -2 * days + 1) && it.date < Dates.addDays(today, -days + 1)
+                }
+                val d = total - prev
+                val lbl = if (statsRange == "week") "last week" else "last month"
+                when { d > 0 -> "+$d vs $lbl"; d < 0 -> "$d vs $lbl"; else -> "Same as $lbl" }
+            }
+            "year" -> {
+                val thisMonday = Stats.weekStart(today)
+                val prev = comps.count {
+                    it.date >= Dates.addDays(thisMonday, -7 * 104) && it.date < Dates.addDays(thisMonday, -7 * 52)
+                }
+                val d = total - prev
+                when { d > 0 -> "+$d vs last year"; d < 0 -> "$d vs last year"; else -> "Same as last year" }
+            }
+            else -> "all time"
+        }
+        val grid = LinearLayout(this); grid.orientation = LinearLayout.VERTICAL
+        grid.layoutParams = lp(t = dp(12f))
+        val rowA = LinearLayout(this); rowA.orientation = LinearLayout.HORIZONTAL
+        val completedTile = v5SummaryTile("Completed", total.toString(), deltaTxt)
+        completedTile.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(12f) }
+        rowA.addView(completedTile)
+        // §3.7.4's second tile is "Focus time" — but the app keeps NO
+        // focus-session data anywhere (Models/Store/Db have no focus
+        // totals; the timer is ephemeral), so the tile honestly shows
+        // Best streak from the on-device Db instead of a fake number.
+        val streakTile = v5SummaryTile("Best streak", Db.bestStreak().toString(), "days · all time")
+        streakTile.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        rowA.addView(streakTile)
+        grid.addView(rowA)
+        val rowB = LinearLayout(this); rowB.orientation = LinearLayout.HORIZONTAL
+        rowB.layoutParams = lp(t = dp(12f))
+        val dayStreakTile = v5SummaryTile("Day streak", Stats.currentStreak(comps, today).toString(), "days in a row")
+        dayStreakTile.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(12f) }
+        rowB.addView(dayStreakTile)
+        // Karma — THE one accent-filled tile (§1.3 budgeted slot).
+        val info = Karma.levelFor(Store.state.karmaPoints)
+        val kt = LinearLayout(this); kt.orientation = LinearLayout.VERTICAL
+        kt.background = roundedRect(V5.ACCENT, V5.R_TILE)
+        kt.setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+        kt.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        val klb = tv("KARMA", 11f, android.graphics.Color.argb(166, 255, 255, 255), true)
+        klb.letterSpacing = 0.06f
+        kt.addView(klb)
+        val kv = tv(info.name, 24f, 0xFFFFFFFF.toInt(), true)
+        kv.layoutParams = lp(t = dp(6f))
+        kt.addView(kv)
+        val ptsStr = Store.state.karmaPoints.toString()
+        val suffix = if (info.nextName != null) " pts · " + info.pointsToNext + " to " + info.nextName
+            else " pts · top level"
+        val span = android.text.SpannableString(ptsStr + suffix)
+        span.setSpan(android.text.style.ForegroundColorSpan(android.graphics.Color.argb(166, 255, 255, 255)),
+            ptsStr.length, ptsStr.length + suffix.length, 0)
+        val ksub = tv("", 11f, 0xFFFFFFFF.toInt())
+        ksub.text = span
+        ksub.layoutParams = lp(t = dp(2f))
+        kt.addView(ksub)
+        rowB.addView(kt)
+        grid.addView(rowB)
+        content.addView(grid)
+
+        // Goal rings row (§3.7.5): daily ring ACCENT, weekly DONE.
+        val gp = Stats.goalProgress(comps, today, Store.state.dailyGoal, Store.state.weeklyGoal)
+        val rings = LinearLayout(this); rings.orientation = LinearLayout.HORIZONTAL
+        rings.layoutParams = lp(t = dp(12f))
+        val dailyTile = v5GoalRingTile("Daily goal", gp.dailyFraction, V5.ACCENT,
+            if (gp.dailyGoal > 0) gp.dailyDone.toString() + " of " + gp.dailyGoal + " today"
+            else "No goal set — tap to set") { showEditGoalSheet(true) }
+        dailyTile.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(12f) }
+        rings.addView(dailyTile)
+        val weeklyTile = v5GoalRingTile("Weekly goal", gp.weeklyFraction, V5.DONE,
+            if (gp.weeklyGoal > 0) gp.weeklyDone.toString() + " of " + gp.weeklyGoal + " this week"
+            else "No goal set — tap to set") { showEditGoalSheet(false) }
+        weeklyTile.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        rings.addView(weeklyTile)
+        content.addView(rings)
+
+        // Shadow Three's stats pack (heatmap, daily chart, productive
+        // day, completion rate, next 7 days) stays reachable below.
+        renderStatsPack()
+    }
+
     private fun renderStats() {
+        if (isV5()) { renderStatsV5(); return }
         // Two-tone shell: the app header stays on #212121; the content
         // area is the warm brown Todoist.PROD_BG (ANALYSIS §7).
         content.setBackgroundColor(Todoist.PROD_BG)
@@ -4568,6 +7697,10 @@ class MainActivity : Activity() {
                 content.addView(chart)
             }
         }
+        // v5 stats pack (SHADOW-THREE-DESIGN §3): editorial caption,
+        // annual heatmap, daily chart, productive day, completion rate,
+        // next-7-days — appended below the Todoist-shaped tabs.
+        if (isV5()) renderStatsPack()
     }
 
     /* ----- Performance (database-backed) ----- */
@@ -4826,7 +7959,7 @@ class MainActivity : Activity() {
         Stats.groupActivitiesByDay(shown).forEach { (day, items) ->
             content.addView(sectionHeader(historyDayLabel(day)))
             val g = LinearLayout(this); g.orientation = LinearLayout.VERTICAL
-            g.background = roundedRect(TD_CARD, 14f); g.layoutParams = lp(b = dp(10f))
+            g.background = roundedRect(cardFill(), 14f); g.layoutParams = lp(b = dp(10f))
             items.forEachIndexed { i, a ->
                 if (i > 0) {
                     val h = hairline()
@@ -5112,6 +8245,7 @@ class MainActivity : Activity() {
     /* ----- Project board ----- */
 
     private fun renderBoard(p: ProjectItem) {
+        if (isV5()) { renderBoardV5(p); return }
         val cols = listOf("todo" to "To do", "doing" to "Doing", "done" to "Done")
         val board = LinearLayout(this); board.orientation = LinearLayout.HORIZONTAL
         cols.forEach { (status, name) ->
@@ -5171,6 +8305,82 @@ class MainActivity : Activity() {
         }
         content.addView(board)
         content.addView(tv("Move tasks with ◀ ▶. In the Done column, ✓ completes the task for real.", 12.5f, Glass.muted(this@MainActivity)))
+    }
+
+    /** Board, v5: the columns keep v4.0's status data behaviour
+     *  (To do / Doing / Done + ◀ ▶ moves), but every card is the §2.6
+     *  compact task-card variant — left bar, ring checkbox, "!" badge,
+     *  due chip — never a one-off restyle (CHECK1 P2-6). Column header
+     *  = name + count (§3.5.4's chip, adapted to status columns). */
+    private fun renderBoardV5(p: ProjectItem) {
+        val cols = listOf("todo" to "To do", "doing" to "Doing", "done" to "Done")
+        val board = LinearLayout(this); board.orientation = LinearLayout.HORIZONTAL
+        cols.forEach { (status, name) ->
+            val tasks = Store.state.tasks.filter { it.projectId == p.id && it.status == status }
+            val colL = LinearLayout(this); colL.orientation = LinearLayout.VERTICAL
+            colL.background = v5CardBg()
+            colL.setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
+            // §3.5.4 geometry: 272dp columns, 12dp gaps, horizontal
+            // scroll — the §2.6 card anatomy needs the width.
+            colL.layoutParams = LinearLayout.LayoutParams(dp(272f), -2).apply {
+                rightMargin = if (status != "done") dp(12f) else 0
+            }
+            val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.layoutParams = lp(b = dp(8f))
+            val ht = tv(name, 13f, V5.TEXT, true)
+            ht.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            head.addView(ht)
+            head.addView(tv(tasks.size.toString(), 12f, V5.FAINT))
+            colL.addView(head)
+            if (tasks.isEmpty()) {
+                val e = tv("—", 13f, V5.FAINT); e.gravity = Gravity.CENTER
+                colL.addView(e)
+            }
+            tasks.forEach { t ->
+                val cardV = v5TaskCard(t, showProject = false, compact = true)
+                cardV.layoutParams = lp(b = dp(10f))
+                colL.addView(cardV)
+                val btns = LinearLayout(this); btns.orientation = LinearLayout.HORIZONTAL
+                btns.gravity = Gravity.END
+                btns.layoutParams = lp(b = dp(10f))
+                fun moveBtn(glyph: String, desc: String, act: () -> Unit) {
+                    val b = tv(glyph, 13f, V5.TEXT)
+                    b.gravity = Gravity.CENTER
+                    b.background = roundedRect(V5.POPUP, 999f)
+                    b.layoutParams = LinearLayout.LayoutParams(dp(28f), dp(28f)).apply { leftMargin = dp(6f) }
+                    b.contentDescription = desc
+                    b.setOnClickListener { act() }
+                    btns.addView(b)
+                }
+                if (status != "todo") {
+                    moveBtn("◀", "Move back") {
+                        t.status = if (status == "done") "doing" else "todo"
+                        Store.save(); Sfx.tick(); render()
+                    }
+                }
+                if (status == "done") {
+                    moveBtn("✓", "Complete task") {
+                        val msg = Store.completeTask(t.id)
+                        Sfx.complete(); toast(msg); render()
+                    }
+                } else {
+                    moveBtn("▶", "Move forward") {
+                        t.status = if (status == "todo") "doing" else "done"
+                        Store.save(); Sfx.tick(); render()
+                    }
+                }
+                colL.addView(btns)
+            }
+            board.addView(colL)
+        }
+        val hscroll = HorizontalScrollView(this)
+        hscroll.isHorizontalScrollBarEnabled = false
+        hscroll.addView(board)
+        content.addView(hscroll)
+        val note = tv("Move tasks with ◀ ▶. In the Done column, ✓ completes the task for real.", 12f, V5.MUTED)
+        note.layoutParams = lp(t = dp(10f))
+        content.addView(note)
     }
 
     /* ---------------- location capture ---------------- */

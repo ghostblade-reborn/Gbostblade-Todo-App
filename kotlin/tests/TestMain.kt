@@ -1,18 +1,27 @@
 import com.ghostblade.task.ActivityItem
+import com.ghostblade.task.ChecklistTemplate
 import com.ghostblade.task.CompletionItem
+import com.ghostblade.task.CountdownItem
 import com.ghostblade.task.Dates
 import com.ghostblade.task.DisplayEngine
 import com.ghostblade.task.DisplayFilter
 import com.ghostblade.task.Filters
 import com.ghostblade.task.GroupMode
+import com.ghostblade.task.HabitItem
+import com.ghostblade.task.HabitLibrary
+import com.ghostblade.task.HabitLog
+import com.ghostblade.task.HabitLogic
 import com.ghostblade.task.Karma
 import com.ghostblade.task.Parser
 import com.ghostblade.task.ProjectItem
 import com.ghostblade.task.LabelItem
+import com.ghostblade.task.RepeatLabels
 import com.ghostblade.task.SortMode
 import com.ghostblade.task.State
 import com.ghostblade.task.Stats
+import com.ghostblade.task.Subtask
 import com.ghostblade.task.TaskItem
+import org.json.JSONObject
 
 var failures = 0
 var total = 0
@@ -299,6 +308,253 @@ fun main() {
     val ctoks = Parser.parse(combo).tokens
     check("token combo kinds", ctoks.map { it.kind }, listOf("project", "priority", "date"))
     check("token combo substrings", ctoks.all { combo.substring(it.start, it.end) == it.text }, true)
+
+    /* ---------- v5 Dates helpers ---------- */
+    // 2026-11-21 is a Saturday.
+    check("dow 2026-11-21 saturday", Dates.dayOfWeek("2026-11-21"), 6)
+    check("dow monday", Dates.dayOfWeek("2026-11-16"), 1)
+    check("dow friday", Dates.dayOfWeek("2026-11-20"), 5)
+    check("dow sunday", Dates.dayOfWeek("2026-11-22"), 7)
+    check("daysBetween forward", Dates.daysBetween("2026-11-01", "2026-11-21"), 20)
+    check("daysBetween negative", Dates.daysBetween("2026-11-21", "2026-11-01"), -20)
+    check("daysBetween same", Dates.daysBetween("2026-11-21", "2026-11-21"), 0)
+    check("daysBetween year edge", Dates.daysBetween("2026-12-31", "2027-01-01"), 1)
+    check("daysBetween year edge neg", Dates.daysBetween("2027-01-01", "2026-12-31"), -1)
+    check("daysBetween leap", Dates.daysBetween("2024-02-28", "2024-03-01"), 2)
+
+    /* ---------- v5 Models: v4.0 fixture loads with defaults ---------- */
+    val v4Json = """{"tasks":[{"id":"t1","title":"Old task","notes":"","projectId":null,"labelIds":[],"priority":4,"dueDate":"2026-11-20","dueTime":null,"recurrence":null,"durationMin":null,"reminderOffsetMin":null,"subtasks":[],"createdAt":123,"status":"todo","locLat":null,"locLng":null,"sectionId":null,"deadline":null,"assignee":null}],"projects":[],"labels":[],"filters":[],"completions":[],"activities":[],"backups":[],"sections":[],"dailyGoal":5,"weeklyGoal":30,"karmaPoints":0,"seeded":true,"lastBackupDay":"","displayShowCompleted":true,"displayLayout":"list"}"""
+    val v4State = State.fromJson(JSONObject(v4Json))
+    check("v4 tasks load", v4State.tasks.size, 1)
+    check("v4 task title", v4State.tasks[0].title, "Old task")
+    check("v4 starred default", v4State.tasks[0].starred, false)
+    check("v4 manualOrder default", v4State.tasks[0].manualOrder, null)
+    check("v4 habits empty", v4State.habits.isEmpty(), true)
+    check("v4 habitLogs empty", v4State.habitLogs.isEmpty(), true)
+    check("v4 countdowns empty", v4State.countdowns.isEmpty(), true)
+    check("v4 checklistTemplates empty", v4State.checklistTemplates.isEmpty(), true)
+    check("v4 dockModules empty", v4State.dockModules.isEmpty(), true)
+
+    /* ---------- v5 Models: round-trip ---------- */
+    val v5 = State()
+    val starTask = TaskItem(id = "st1", title = "Starred task", starred = true, manualOrder = 20)
+    val plainTask = TaskItem(id = "pt1", title = "Plain task")
+    v5.tasks.add(starTask); v5.tasks.add(plainTask)
+    val habitRt = HabitItem(
+        id = "h1", name = "Meditate", description = "desc", icon = "lotus-mind", color = "#bf5af2",
+        kind = "build", freqType = "weekdays", freqDays = mutableListOf(1, 3, 5),
+        freqCount = 1, freqPeriodDays = 7, tracking = "checklist", targetCount = 1, unit = "",
+        checklist = mutableListOf(Subtask("s1", "Sit", false), Subtask("s2", "Breathe", false)),
+        reminderPhrase = "Meditate now", reminderTimes = mutableListOf("07:00", "21:00"),
+        createdAt = 1700000000000L, archived = false, order = 3, libraryKey = "meditation"
+    )
+    v5.habits.add(habitRt)
+    v5.habitLogs.add(HabitLog(id = "l1", habitId = "h1", date = "2026-11-20", count = 0, doneItems = mutableListOf("s1", "s2"), done = true, at = 1700000001000L))
+    v5.countdowns.add(CountdownItem(id = "c1", title = "Goal deadline", targetDate = "2027-07-20", color = "#ff9f0a", createdAt = 1700000002000L))
+    v5.checklistTemplates.add(ChecklistTemplate(id = "ct1", name = "Grocery", items = listOf("Milk", "Eggs")))
+    v5.dockModules.addAll(listOf("today", "habits", "browse"))
+    val v5Restored = State.fromJson(JSONObject(v5.toJson().toString()))
+    check("v5 rt tasks size", v5Restored.tasks.size, 2)
+    check("v5 rt starred", v5Restored.tasks[0].starred, true)
+    check("v5 rt manualOrder", v5Restored.tasks[0].manualOrder, 20)
+    check("v5 rt plain starred", v5Restored.tasks[1].starred, false)
+    check("v5 rt plain manualOrder", v5Restored.tasks[1].manualOrder, null)
+    check("v5 rt habits size", v5Restored.habits.size, 1)
+    val rh = v5Restored.habits[0]
+    check("v5 rt habit name", rh.name, "Meditate")
+    check("v5 rt habit description", rh.description, "desc")
+    check("v5 rt habit icon", rh.icon, "lotus-mind")
+    check("v5 rt habit color", rh.color, "#bf5af2")
+    check("v5 rt habit kind", rh.kind, "build")
+    check("v5 rt habit freqType", rh.freqType, "weekdays")
+    check("v5 rt habit freqDays", rh.freqDays, mutableListOf(1, 3, 5))
+    check("v5 rt habit tracking", rh.tracking, "checklist")
+    check("v5 rt habit checklist ids", rh.checklist.map { it.id }, listOf("s1", "s2"))
+    check("v5 rt habit checklist titles", rh.checklist.map { it.title }, listOf("Sit", "Breathe"))
+    check("v5 rt habit reminderPhrase", rh.reminderPhrase, "Meditate now")
+    check("v5 rt habit reminderTimes", rh.reminderTimes, mutableListOf("07:00", "21:00"))
+    check("v5 rt habit createdAt", rh.createdAt, 1700000000000L)
+    check("v5 rt habit archived", rh.archived, false)
+    check("v5 rt habit order", rh.order, 3)
+    check("v5 rt habit libraryKey", rh.libraryKey, "meditation")
+    check("v5 rt habitLogs size", v5Restored.habitLogs.size, 1)
+    val rl = v5Restored.habitLogs[0]
+    check("v5 rt log habitId", rl.habitId, "h1")
+    check("v5 rt log date", rl.date, "2026-11-20")
+    check("v5 rt log doneItems", rl.doneItems, mutableListOf("s1", "s2"))
+    check("v5 rt log done", rl.done, true)
+    check("v5 rt log at", rl.at, 1700000001000L)
+    check("v5 rt countdowns size", v5Restored.countdowns.size, 1)
+    check("v5 rt countdown title", v5Restored.countdowns[0].title, "Goal deadline")
+    check("v5 rt countdown target", v5Restored.countdowns[0].targetDate, "2027-07-20")
+    check("v5 rt countdown color", v5Restored.countdowns[0].color, "#ff9f0a")
+    check("v5 rt countdown createdAt", v5Restored.countdowns[0].createdAt, 1700000002000L)
+    check("v5 rt checklistTemplates size", v5Restored.checklistTemplates.size, 1)
+    check("v5 rt checklistTemplate name", v5Restored.checklistTemplates[0].name, "Grocery")
+    check("v5 rt checklistTemplate items", v5Restored.checklistTemplates[0].items, listOf("Milk", "Eggs"))
+    check("v5 rt dockModules", v5Restored.dockModules, mutableListOf("today", "habits", "browse"))
+
+    /* ---------- v5 HabitLogic: isDueOn ---------- */
+    val hDaily = HabitItem(id = "hd", name = "Daily", freqType = "daily")
+    check("due daily any", HabitLogic.isDueOn(hDaily, "2026-11-17"), true)
+    val hWeekdays = HabitItem(id = "hw", name = "MWF", freqType = "weekdays", freqDays = mutableListOf(1, 3, 5))
+    check("due weekdays mon", HabitLogic.isDueOn(hWeekdays, "2026-11-16"), true)
+    check("due weekdays tue", HabitLogic.isDueOn(hWeekdays, "2026-11-17"), false)
+    check("due weekdays fri", HabitLogic.isDueOn(hWeekdays, "2026-11-20"), true)
+    check("due weekdays sat", HabitLogic.isDueOn(hWeekdays, "2026-11-21"), false)
+    val hMonthdays = HabitItem(id = "hm", name = "Monthdays", freqType = "monthdays", freqDays = mutableListOf(1, 15, 31))
+    check("due monthdays 15", HabitLogic.isDueOn(hMonthdays, "2026-11-15"), true)
+    check("due monthdays 16", HabitLogic.isDueOn(hMonthdays, "2026-11-16"), false)
+    check("due monthdays 31 jan", HabitLogic.isDueOn(hMonthdays, "2026-01-31"), true)
+    check("due monthdays feb28", HabitLogic.isDueOn(hMonthdays, "2026-02-28"), false)
+    // createdAt pinned to 2026-01-01 (Senior Engineer fixture repair):
+    // the wall-clock default postdates this fixture's Nov-2026 history,
+    // and score() now bounds its window by the habit's existence —
+    // the fixture always meant "a long-established habit".
+    val hPeriod = HabitItem(id = "hp", name = "Period", freqType = "period", freqCount = 2, freqPeriodDays = 7,
+        createdAt = Dates.parse("2026-01-01").timeInMillis)
+    check("due period any", HabitLogic.isDueOn(hPeriod, "2026-11-17"), true)
+
+    /* ---------- v5 HabitLogic: resolveDone via isDoneOn ---------- */
+    val hTick = HabitItem(id = "ht", name = "Tick", tracking = "tick")
+    val tickLogs = listOf(HabitLog(id = "tl1", habitId = "ht", date = "2026-11-20", done = true))
+    check("done tick true", HabitLogic.isDoneOn(hTick, tickLogs, "2026-11-20"), true)
+    check("done tick no log", HabitLogic.isDoneOn(hTick, tickLogs, "2026-11-19"), false)
+    val hCount = HabitItem(id = "hc", name = "Water", tracking = "count", targetCount = 8, unit = "glasses")
+    val countLogs = listOf(
+        HabitLog(id = "cl1", habitId = "hc", date = "2026-11-20", count = 5, done = false),
+        HabitLog(id = "cl2", habitId = "hc", date = "2026-11-21", count = 8, done = false)
+    )
+    check("done count below", HabitLogic.isDoneOn(hCount, countLogs, "2026-11-20"), false)
+    check("done count at target", HabitLogic.isDoneOn(hCount, countLogs, "2026-11-21"), true)
+    val hCheck = HabitItem(id = "hch", name = "Routine", tracking = "checklist",
+        checklist = mutableListOf(Subtask("s1", "A", false), Subtask("s2", "B", false)))
+    val checkLogs = listOf(
+        HabitLog(id = "chl1", habitId = "hch", date = "2026-11-20", doneItems = mutableListOf("s1")),
+        HabitLog(id = "chl2", habitId = "hch", date = "2026-11-21", doneItems = mutableListOf("s1", "s2"))
+    )
+    check("done checklist partial", HabitLogic.isDoneOn(hCheck, checkLogs, "2026-11-20"), false)
+    check("done checklist full", HabitLogic.isDoneOn(hCheck, checkLogs, "2026-11-21"), true)
+
+    /* ---------- v5 HabitLogic: streaks ---------- */
+    // Weekday (Mon-Fri) habit: Fri/Thu/Wed done, Tue missed, Mon done.
+    // Today is Saturday (not due, skipped) -> streak 3.
+    // createdAt pinned (see hPeriod note): the year grid now renders
+    // pre-existence days as NONE, and this fixture's history starts
+    // 2026-11-16 — the habit must predate it.
+    val hMF = HabitItem(id = "hmf", name = "MF", freqType = "weekdays", freqDays = mutableListOf(1, 2, 3, 4, 5),
+        createdAt = Dates.parse("2026-01-01").timeInMillis)
+    fun mfLog(d: String) = HabitLog(id = "mf$d", habitId = "hmf", date = d, done = true)
+    val mfLogs = listOf(mfLog("2026-11-20"), mfLog("2026-11-19"), mfLog("2026-11-18"), mfLog("2026-11-16"))
+    check("streak weekday gaps", HabitLogic.streak(hMF, mfLogs, "2026-11-21"), 3)
+    check("bestStreak weekday", HabitLogic.bestStreak(hMF, mfLogs, "2026-11-21"), 3)
+    // Today-due-not-done kindness (daily): today not done, yesterday+day before done -> 2.
+    val hKind = HabitItem(id = "hk", name = "Kind", freqType = "daily")
+    val kindLogs = listOf(
+        HabitLog(id = "k1", habitId = "hk", date = "2026-11-20", done = true),
+        HabitLog(id = "k2", habitId = "hk", date = "2026-11-19", done = true)
+    )
+    check("streak today pending kindness", HabitLogic.streak(hKind, kindLogs, "2026-11-21"), 2)
+    // Daily streak including today when done.
+    val kindLogs2 = kindLogs + HabitLog(id = "k3", habitId = "hk", date = "2026-11-21", done = true)
+    check("streak daily incl today", HabitLogic.streak(hKind, kindLogs2, "2026-11-21"), 3)
+    // Period streak: 2 done in trailing 7d on both 20th and 21st -> 2.
+    val periodLogs = listOf(
+        HabitLog(id = "p1", habitId = "hp", date = "2026-11-20", done = true),
+        HabitLog(id = "p2", habitId = "hp", date = "2026-11-19", done = true)
+    )
+    check("streak period", HabitLogic.streak(hPeriod, periodLogs, "2026-11-21"), 2)
+
+    /* ---------- v5 HabitLogic: score ---------- */
+    // Window 2026-10-25..2026-11-21 is exactly 4 weeks.
+    // Daily habit: 14 done of 28. Weekday habit: 6 done of 20 due. Archived ignored.
+    // (14+6)/(28+20)=20/48=41.666.. -> 41.7
+    val scoreDaily = HabitItem(id = "sd", name = "SD", freqType = "daily")
+    val scoreLogs = mutableListOf<HabitLog>()
+    var sdCursor = "2026-10-25"
+    for (i in 0 until 14) { scoreLogs.add(HabitLog(id = "sd$i", habitId = "sd", date = sdCursor, done = true)); sdCursor = Dates.addDays(sdCursor, 1) }
+    val scoreWeekday = HabitItem(id = "sw", name = "SW", freqType = "weekdays", freqDays = mutableListOf(1, 2, 3, 4, 5))
+    listOf("2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02").forEachIndexed { i, d ->
+        scoreLogs.add(HabitLog(id = "sw$i", habitId = "sw", date = d, done = true))
+    }
+    val scoreArchived = HabitItem(id = "sa", name = "SA", freqType = "daily", archived = true)
+    check("score mixed fixture", HabitLogic.score(listOf(scoreDaily, scoreWeekday, scoreArchived), scoreLogs, "2026-11-21"), 41.7)
+    check("score empty", HabitLogic.score(emptyList(), emptyList(), "2026-11-21"), 0.0)
+    val neverDue = HabitItem(id = "nd", name = "ND", freqType = "weekdays", freqDays = mutableListOf())
+    check("score denominator zero", HabitLogic.score(listOf(neverDue), emptyList(), "2026-11-21"), 0.0)
+    // Period score: satisfied only on 20th and 21st -> 2/28=7.142.. -> 7.1
+    check("score period fixture", HabitLogic.score(listOf(hPeriod), periodLogs, "2026-11-21"), 7.1)
+
+    /* ---------- v5 HabitLogic: gridCells ---------- */
+    // createdAt pinned (see hPeriod note): "grid missed cell" expects
+    // 2026-11-19 to be a real MISSED day, so the habit must have
+    // existed before it — the wall-clock default (run date) does not.
+    val gridHabit = HabitItem(id = "hg", name = "Grid", freqType = "daily",
+        createdAt = Dates.parse("2026-01-01").timeInMillis)
+    val gridLogs = listOf(HabitLog(id = "g1", habitId = "hg", date = "2026-11-20", done = true))
+    val cells = HabitLogic.gridCells(gridHabit, gridLogs, "2026-11-21")
+    check("grid size 371", cells.size, 371)
+    check("grid first date", cells[0].date, Dates.addDays(Stats.weekStart("2026-11-21"), -52 * 7))
+    check("grid last col contains today", cells.subList(364, 371).map { it.date }.contains("2026-11-21"), true)
+    check("grid done cell", cells.first { it.date == "2026-11-20" }.state, HabitLogic.CellState.DONE)
+    check("grid missed cell", cells.first { it.date == "2026-11-19" }.state, HabitLogic.CellState.MISSED)
+    check("grid open cell", cells.first { it.date == "2026-11-21" }.state, HabitLogic.CellState.OPEN)
+    check("grid future cell", cells.first { it.date == "2026-11-22" }.state, HabitLogic.CellState.FUTURE)
+    val mfCells = HabitLogic.gridCells(hMF, mfLogs, "2026-11-21")
+    check("grid rest cell saturday", mfCells.first { it.date == "2026-11-14" }.state, HabitLogic.CellState.REST)
+
+    /* ---------- v5 HabitLogic: milestones ---------- */
+    val msCreated = Dates.parse("2026-11-01").timeInMillis
+    val hMs = HabitItem(id = "hms", name = "MS", freqType = "daily", createdAt = msCreated)
+    val msLogs = mutableListOf<HabitLog>()
+    var msCursor = "2026-11-01"
+    for (i in 0 until 7) { msLogs.add(HabitLog(id = "ms$i", habitId = "hms", date = msCursor, done = true)); msCursor = Dates.addDays(msCursor, 1) }
+    msLogs.add(HabitLog(id = "ms7", habitId = "hms", date = "2026-11-09", done = true))
+    val ms = HabitLogic.milestones(hMs, msLogs, "2026-11-21")
+    check("milestone started present", ms.any { it.label == "Started" && it.date == "2026-11-01" }, true)
+    check("milestone 7day present", ms.any { it.label == "7-day streak" && it.date == "2026-11-07" }, true)
+    check("milestone count small fixture", ms.size, 2)
+    check("milestone best is 7", HabitLogic.bestStreak(hMs, msLogs, "2026-11-21"), 7)
+
+    /* ---------- v5 HabitLibrary ---------- */
+    check("library size 24", HabitLibrary.TEMPLATES.size, 24)
+    check("library groups", HabitLibrary.GROUPS, listOf("Health", "Life", "Sports", "Mind"))
+    check("library health count", HabitLibrary.byGroup("Health").size, 8)
+    check("library life count", HabitLibrary.byGroup("Life").size, 6)
+    check("library sports count", HabitLibrary.byGroup("Sports").size, 6)
+    check("library mind count", HabitLibrary.byGroup("Mind").size, 4)
+    check("library popular count", HabitLibrary.TEMPLATES.count { it.popular }, 8)
+    check("library drink water", HabitLibrary.byKey("drink-water")?.name, "Drink Water")
+    check("library drink water popular", HabitLibrary.byKey("drink-water")?.popular, true)
+    check("library drink water color", HabitLibrary.byKey("drink-water")?.color, "#34c759")
+    check("library meditation icon", HabitLibrary.byKey("meditation")?.icon, "lotus-mind")
+    check("library no-phone kind quit", HabitLibrary.byKey("no-phone-first-hour")?.kind, "quit")
+    check("library no-phone icon", HabitLibrary.byKey("no-phone-first-hour")?.icon, "phone-off")
+    check("library unknown key", HabitLibrary.byKey("nope"), null)
+
+    /* ---------- v5 RepeatLabels ---------- */
+    val rlDate = "2026-11-21" // Saturday, day 21, November
+    check("rl menu daily", RepeatLabels.menuLabel("daily", rlDate), "Daily")
+    check("rl menu weekly", RepeatLabels.menuLabel("weekly", rlDate), "Weekly (Sat)")
+    check("rl menu weekly:6", RepeatLabels.menuLabel("weekly:6", rlDate), "Weekly (Sat)")
+    check("rl menu weekly:1", RepeatLabels.menuLabel("weekly:1", rlDate), "Weekly (Mon)")
+    check("rl menu monthly", RepeatLabels.menuLabel("monthly", rlDate), "Monthly (The 21 day)")
+    check("rl menu yearly", RepeatLabels.menuLabel("yearly", rlDate), "Yearly (on Nov 21)")
+    check("rl menu weekday", RepeatLabels.menuLabel("weekday", rlDate), "Every Weekday (Mon–Fri)")
+    check("rl menu custom", RepeatLabels.menuLabel("custom", rlDate), "Custom…")
+    check("rl menu null", RepeatLabels.menuLabel(null, rlDate), "None")
+    check("rl menu unknown", RepeatLabels.menuLabel("bogus", rlDate), "None")
+    check("rl menu weekly fallback", RepeatLabels.menuLabel("weekly", null), "Weekly")
+    check("rl menu monthly fallback", RepeatLabels.menuLabel("monthly", null), "Monthly")
+    check("rl menu yearly fallback", RepeatLabels.menuLabel("yearly", null), "Yearly")
+    check("rl summary daily", RepeatLabels.summaryLabel("daily", rlDate), "Daily")
+    check("rl summary weekly", RepeatLabels.summaryLabel("weekly", rlDate), "Weekly on Sat")
+    check("rl summary weekly:1", RepeatLabels.summaryLabel("weekly:1", rlDate), "Weekly on Mon")
+    check("rl summary monthly", RepeatLabels.summaryLabel("monthly", rlDate), "Monthly on the 21 day")
+    check("rl summary yearly", RepeatLabels.summaryLabel("yearly", rlDate), "Yearly on November 21")
+    check("rl summary weekday", RepeatLabels.summaryLabel("weekday", rlDate), "Every Weekday (Mon–Fri)")
+    check("rl summary custom", RepeatLabels.summaryLabel("custom", rlDate), "Custom")
+    check("rl summary null", RepeatLabels.summaryLabel(null, rlDate), "None")
 
     println("----")
     println("$total checks, $failures failures")

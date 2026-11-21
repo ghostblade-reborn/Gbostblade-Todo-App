@@ -47,6 +47,9 @@ OUT="GhostBladeTask-Kotlin-v${VER%-kotlin}.apk"
 cp "$OUT" GhostBladeTask-Kotlin.apk
 
 "$BT/apksigner" verify "$OUT"
-"$BT/aapt2" dump badging "$OUT" | head -8
+# Badging goes to a file first: piping it into `head` made aapt2 die of
+# SIGPIPE and, under pipefail, the whole script exited 141 on success.
+"$BT/aapt2" dump badging "$OUT" > "$B/badging.txt"
+head -8 "$B/badging.txt"
 ls -la "$OUT"
 sha256sum "$OUT"

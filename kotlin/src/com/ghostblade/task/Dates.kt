@@ -26,6 +26,26 @@ object Dates {
     /** JS-style day of week: 0 = Sunday … 6 = Saturday. */
     fun jsDayOfWeek(c: Calendar): Int = c.get(Calendar.DAY_OF_WEEK) - 1
 
+    /** ISO-style day of week for a "yyyy-MM-dd" date: 1 = Monday … 7 = Sunday. */
+    fun dayOfWeek(date: String): Int {
+        val js = jsDayOfWeek(parse(date))
+        return if (js == 0) 7 else js
+    }
+
+    /** Signed whole days from [a] to [b] (b - a): positive when [b] is
+     *  after [a], negative when before, 0 when equal. Computed on a UTC
+     *  calendar so DST transitions in the local zone cannot skew it. */
+    fun daysBetween(a: String, b: String): Int {
+        fun epochDay(s: String): Long {
+            val p = s.split("-").map { it.toInt() }
+            val c = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+            c.set(p[0], p[1] - 1, p[2], 0, 0, 0)
+            c.set(Calendar.MILLISECOND, 0)
+            return c.timeInMillis / 86400000L
+        }
+        return (epochDay(b) - epochDay(a)).toInt()
+    }
+
     fun fmtDay(s: String): String {
         return try {
             val days = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")

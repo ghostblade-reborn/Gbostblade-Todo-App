@@ -19,6 +19,7 @@ class BootReceiver : BroadcastReceiver() {
                 try {
                     Store.init(ctx)
                     Reminders.syncAll(ctx)
+                    HabitReminders.syncAll(ctx)
                 } catch (e: Exception) {
                     AlarmHelper.rescheduleAll(ctx)
                 }
@@ -27,6 +28,9 @@ class BootReceiver : BroadcastReceiver() {
             else -> {
                 AlarmHelper.rescheduleAll(ctx)
                 LocationReceiver.rearmAll(ctx)
+                // Habit alarms are one-shot entries in the same store;
+                // rescheduleAll above re-arms any still in the future,
+                // and the next app open re-syncs the rest.
             }
         }
     }

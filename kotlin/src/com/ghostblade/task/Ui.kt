@@ -22,11 +22,12 @@ object Prefs {
     fun glass(ctx: Context): String = prefs(ctx).getString("glass", "default") ?: "default"
     fun accent(ctx: Context): String = prefs(ctx).getString("accent", "crimson") ?: "crimson"
     fun wallpaper(ctx: Context): String = prefs(ctx).getString("wallpaper", "aurora") ?: "aurora"
-    /** todoist (DEFAULT: flat Todoist dark, see the Todoist tokens) | aurora
-     *  (colour wallpapers) | black (Apple Music dark) | white (frosted light).
-     *  Only an explicitly stored choice overrides the Todoist default, so
-     *  existing users who picked a theme keep it. */
-    fun theme(ctx: Context): String = prefs(ctx).getString("theme", "todoist") ?: "todoist"
+    /** v5 (DEFAULT: flat v5 dark, see the V5 tokens) | todoist (flat Todoist
+     *  dark) | aurora (colour wallpapers) | black (Apple Music dark) | white
+     *  (frosted light). todoist/aurora/black/white remain selectable rollback
+     *  skins when explicitly stored. Only an explicitly stored choice
+     *  overrides the v5 default, so existing users who picked a theme keep it. */
+    fun theme(ctx: Context): String = prefs(ctx).getString("theme", "v5") ?: "v5"
     /** Apple Music-style red secondary text. */
     fun redText(ctx: Context): Boolean = prefs(ctx).getBoolean("red_text", false)
     fun set(ctx: Context, key: String, value: String) = prefs(ctx).edit().putString(key, value).apply()
@@ -133,6 +134,69 @@ object Todoist {
     }
 }
 
+/** v5 design tokens — SHADOW-FOUR-DESIGN §1.2. Flat tinted surfaces only:
+ *  no gradients, no blur. This is the DEFAULT appearance: Prefs.theme()
+ *  defaults to "v5". The Todoist object above stays untouched as the
+ *  rollback skin, as do the Aurora/Black/White glass themes. */
+object V5 {
+    val BG = 0xFF0B0B0E.toInt()
+    val SHEET = 0xFF131318.toInt()
+    val CARD = 0xFF1B1B22.toInt()
+    val POPUP = 0xFF26262F.toInt()
+    val TRACK = 0xFF232329.toInt()
+    val HAIRLINE = Color.argb(20, 255, 255, 255)
+    val TEXT = 0xFFFFFFFF.toInt()
+    val MUTED = 0xFF9E9EA8.toInt()
+    val FAINT = 0xFF6F6F7A.toInt()
+    val PLACEHOLDER = 0xFF5C5C66.toInt()
+    val ACCENT = 0xFFD04349.toInt()
+    val ACCENT_BRAND = 0xFFE44332.toInt()
+    val ACCENT_TINT = Color.argb(46, 208, 67, 73)
+    val ACCENT_TINT_DEEP = Color.argb(77, 208, 67, 73)
+    val DONE = 0xFF3ECF6F.toInt()
+    val P1 = 0xFFE44332.toInt()
+    val P2 = 0xFFFF9F0A.toInt()
+    val P3 = 0xFF4A90D9.toInt()
+    val P4 = 0xFF9E9E9E.toInt()
+    val OVERDUE = 0xFFE56864.toInt()
+    val HANDLE = 0xFF3A3A42.toInt()
+    val SCRIM = Color.argb(160, 0, 0, 0)
+
+    // Radii (dp) — SHADOW-FOUR-DESIGN §1.4.
+    const val R_SHEET = 28f
+    const val R_HERO = 24f
+    const val R_CARD = 20f
+    const val R_TILE = 18f
+    const val R_ICONSQ = 12f
+    const val R_DAYPILL = 20f
+
+    // Spacing (dp) — SHADOW-FOUR-DESIGN §1.5.
+    const val SCREEN_PAD = 20
+    const val SECTION_GAP = 24
+    const val CARD_GAP = 12
+    const val TILE_GAP = 10
+    const val CARD_PAD = 16
+    const val CONTENT_BOTTOM_INSET = 106
+
+    /** Translucent tint of [color] at [alpha] (0–255), keeping its rgb. */
+    fun tint(color: Int, alpha: Int): Int =
+        Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+
+    /** Semantic colour for a due-date segment, remapping Todoist.dateColor
+     *  semantics onto v5: today → DONE, tomorrow → P2, overdue → OVERDUE,
+     *  else FAINT. dueDate is "yyyy-MM-dd" or null. */
+    fun dateColor(dueDate: String?): Int {
+        if (dueDate == null) return FAINT
+        val today = Dates.today()
+        return when {
+            dueDate < today -> OVERDUE
+            dueDate == today -> DONE
+            dueDate == Dates.addDays(today, 1) -> P2
+            else -> FAINT
+        }
+    }
+}
+
 /** Liquid Glass look on native views: translucent fill + specular top line +
  *  soft rim, layered over the aurora/photo wallpaper behind.
  *
@@ -152,11 +216,13 @@ object Glass {
     fun isWhite(ctx: Context) = Prefs.theme(ctx) == "white"
     fun isBlack(ctx: Context) = Prefs.theme(ctx) == "black"
     fun isTodoist(ctx: Context) = Prefs.theme(ctx) == "todoist"
+    fun isV5(ctx: Context) = Prefs.theme(ctx) == "v5"
 
     /** Theme-aware primary text colour. */
     fun text(ctx: Context): Int = when {
         isWhite(ctx) -> 0xFF131318.toInt()
         isTodoist(ctx) -> Todoist.TEXT
+        isV5(ctx) -> V5.TEXT
         else -> TEXT
     }
 
@@ -165,9 +231,11 @@ object Glass {
     fun muted(ctx: Context): Int = when {
         Prefs.redText(ctx) && isWhite(ctx) -> Accents.acc2(ctx)
         Prefs.redText(ctx) && isTodoist(ctx) -> Todoist.SALMON
+        Prefs.redText(ctx) && isV5(ctx) -> V5.OVERDUE
         Prefs.redText(ctx) -> Accents.base(ctx)
         isWhite(ctx) -> 0xFF62626D.toInt()
         isTodoist(ctx) -> Todoist.MUTED
+        isV5(ctx) -> V5.MUTED
         else -> MUTED
     }
 
@@ -182,6 +250,13 @@ object Glass {
      *  themed for Aurora / Black / White appearances. */
     fun panel(ctx: Context, radiusDp: Float = 22f, strong: Boolean = false): Drawable {
         val r = dp(ctx, radiusDp).toFloat()
+        if (isV5(ctx)) {
+            // Flat v5 card: solid V5.CARD, no gradient, no stroke sheen.
+            val flat = GradientDrawable()
+            flat.cornerRadius = r
+            flat.setColor(V5.CARD)
+            return flat
+        }
         if (isTodoist(ctx)) {
             // Flat Todoist card: solid #282828, no glass, no gradient, no rim.
             // (Nav bar wants Todoist.NAV instead — use navBarBg() there.)
@@ -235,6 +310,13 @@ object Glass {
      *  wallpaper, translucent enough for the blurred backdrop to glow through. */
     fun sheetPanel(ctx: Context, radiusDp: Float = 30f): Drawable {
         val r = dp(ctx, radiusDp).toFloat()
+        if (isV5(ctx)) {
+            // Flat v5 sheet: solid V5.SHEET with the requested corner radius.
+            val flat = GradientDrawable()
+            flat.cornerRadius = r
+            flat.setColor(V5.SHEET)
+            return flat
+        }
         if (isTodoist(ctx)) {
             // Flat Todoist sheet: solid #1F1F1F (Quick Add / paywall shade).
             // The Display sheet wants Todoist.BG instead — todoistSheetBg().
@@ -284,6 +366,13 @@ object Glass {
     }
 
     fun accentGradient(ctx: Context, radiusDp: Float): Drawable {
+        if (isV5(ctx)) {
+            // Flat v5 accent: solid V5.ACCENT, no gradient.
+            val flat = GradientDrawable()
+            flat.cornerRadius = dp(ctx, radiusDp).toFloat()
+            flat.setColor(V5.ACCENT)
+            return flat
+        }
         if (isTodoist(ctx)) {
             // Flat solid Todoist red — no gradient on Todoist surfaces.
             val flat = GradientDrawable()
@@ -303,6 +392,11 @@ object Glass {
     fun chip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 14f).toFloat()
+        if (isV5(ctx)) {
+            g.cornerRadius = dp(ctx, 999f).toFloat()
+            if (on) g.setColor(V5.ACCENT_TINT_DEEP) else g.setColor(V5.POPUP)
+            return g
+        }
         if (isTodoist(ctx)) {
             // on = selected nav pill (#472524 oval); off = flat chip grey.
             // Prefer navPillBg()/qaChipBg() in new code — this branch only
@@ -340,6 +434,15 @@ object Glass {
     fun sheetChip(ctx: Context, on: Boolean): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 999f).toFloat()
+        if (isV5(ctx)) {
+            if (on) {
+                g.setColor(V5.ACCENT_TINT)
+                g.setStroke(dp(ctx, 1f), V5.ACCENT_TINT_DEEP)
+            } else {
+                g.setColor(V5.POPUP)
+            }
+            return g
+        }
         if (isTodoist(ctx)) {
             // Binding correction: QA chips are ROUNDED RECTANGLES (#3F3F3F,
             // ~11dp radius), never full pills. "on" adds a salmon rim only —
@@ -377,6 +480,13 @@ object Glass {
         val g = GradientDrawable()
         g.shape = GradientDrawable.OVAL
         val ring = Todoist.priorityColor(priority)
+        if (filled && isV5(ctx)) {
+            // v5 (SHADOW-FOUR §2.6): done fill is solid V5.DONE green,
+            // whatever the priority was. Unchecked v5 falls through to the
+            // shared ring + priorityFill logic below, unchanged.
+            g.setColor(V5.DONE)
+            return g
+        }
         if (filled) {
             g.setColor(ring)
         } else {
@@ -384,13 +494,22 @@ object Glass {
                 if (priority == 4 && isWhite(ctx)) Color.argb(20, 20, 20, 35)
                 else Todoist.priorityFill(priority)
             )
-            g.setStroke(dp(ctx, if (priority in 1..3) 3f else 2f), ring)
+            // v5 spec (SHADOW-FOUR §2.6.2): the ring is 2dp at every
+            // priority. Legacy themes keep the sampled 3dp P1–P3 ring.
+            g.setStroke(dp(ctx, if (isV5(ctx)) 2f else if (priority in 1..3) 3f else 2f), ring)
         }
         return g
     }
 
     /** Full-screen wallpaper: preset aurora gradients or the user's photo. */
     fun wallpaperView(ctx: Context): View {
+        if (isV5(ctx)) {
+            // v5 is always flat: plain V5.BG, no wallpaper behind v5 lists.
+            // This check sits BEFORE the custom-photo branch on purpose.
+            val v = View(ctx)
+            v.background = ColorDrawable(V5.BG)
+            return v
+        }
         val wp = Prefs.wallpaper(ctx)
         if (wp == "custom") {
             val f = File(ctx.filesDir, "wallpaper.jpg")
@@ -513,12 +632,13 @@ object Glass {
     /** Grouped-container background: ONE flat #282828 panel whose OUTER
      *  corners carry the radius; rows inside it stay square (analysis §1). */
     fun groupedPanel(ctx: Context, radiusDp: Float = 16f): Drawable =
-        flatDrawable(ctx, Todoist.CARD, radiusDp)
+        if (isV5(ctx)) flatDrawable(ctx, V5.CARD, radiusDp)
+        else flatDrawable(ctx, Todoist.CARD, radiusDp)
 
     /** 1px hairline divider view for inside a grouped container. */
     fun groupDivider(ctx: Context, insetDp: Float = 50f): View {
         val v = View(ctx)
-        v.background = ColorDrawable(Todoist.HAIRLINE)
+        v.background = ColorDrawable(if (isV5(ctx)) V5.HAIRLINE else Todoist.HAIRLINE)
         v.layoutParams = LinearLayout.LayoutParams(-1, 1).apply { leftMargin = dp(ctx, insetDp) }
         return v
     }
@@ -548,6 +668,15 @@ object Glass {
     fun qaChipBg(ctx: Context, on: Boolean = false): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 11f).toFloat()
+        if (isV5(ctx)) {
+            if (on) {
+                g.setColor(V5.ACCENT_TINT)
+                g.setStroke(dp(ctx, 1f), V5.ACCENT_TINT_DEEP)
+            } else {
+                g.setColor(V5.POPUP)
+            }
+            return g
+        }
         g.setColor(Todoist.CHIP)
         if (on) g.setStroke(dp(ctx, 1f), Todoist.SALMON)
         return g
@@ -559,7 +688,8 @@ object Glass {
         flatDrawable(ctx, Todoist.RED, radiusDp)
 
     /** Bottom nav bar background: flat #262626, attached, no radius. */
-    fun navBarBg(ctx: Context): Drawable = ColorDrawable(Todoist.NAV)
+    fun navBarBg(ctx: Context): Drawable =
+        if (isV5(ctx)) ColorDrawable(V5.CARD) else ColorDrawable(Todoist.NAV)
 
     /** Selected nav pill: fully-rounded oval #472524 behind the ICON only;
      *  the label sits below it (salmon when selected). Crossfade it — never
@@ -567,7 +697,7 @@ object Glass {
     fun navPillBg(ctx: Context): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, 999f).toFloat()
-        g.setColor(Todoist.NAV_PILL)
+        g.setColor(if (isV5(ctx)) V5.ACCENT_TINT_DEEP else Todoist.NAV_PILL)
         return g
     }
 
@@ -598,6 +728,11 @@ object Glass {
     fun popupBg(ctx: Context, radiusDp: Float = 16f): Drawable {
         val g = GradientDrawable()
         g.cornerRadius = dp(ctx, radiusDp).toFloat()
+        if (isV5(ctx)) {
+            // v5 surfaces are fully opaque.
+            g.setColor(V5.POPUP)
+            return g
+        }
         g.setColor(Color.argb(232, 28, 28, 28))
         return g
     }

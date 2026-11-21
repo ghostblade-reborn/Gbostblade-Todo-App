@@ -18,6 +18,7 @@ object Filters {
             tok == "upcoming" -> t.dueDate != null && t.dueDate!! > Dates.today()
             tok == "no date" -> t.dueDate == null
             tok == "recurring" -> t.recurrence != null
+            tok == "starred" -> t.starred
             Regex("""^p[1-4]$""").matches(tok) -> t.priority == tok[1].digitToInt()
             tok.startsWith("#") -> {
                 val p = state.projects.find { it.id == t.projectId }

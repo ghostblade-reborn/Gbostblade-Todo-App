@@ -66,6 +66,16 @@ class ReminderReceiver : BroadcastReceiver() {
         if (id != null) {
             ctx.getSharedPreferences(AlarmHelper.PREFS, Context.MODE_PRIVATE).edit().remove(id).apply()
         }
+
+        // Habit reminders are recurring in effect: arm the next due
+        // occurrence now that this one has fired (v5, HabitReminders).
+        val habitId = id?.let { HabitReminders.habitIdOf(it) }
+        if (habitId != null) {
+            try {
+                Store.init(ctx)
+                HabitReminders.resyncAfterFire(ctx, habitId)
+            } catch (e: Exception) { /* next app open re-syncs all habits */ }
+        }
     }
 
     companion object {
